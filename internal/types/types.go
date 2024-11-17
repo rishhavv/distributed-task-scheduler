@@ -9,6 +9,7 @@ import (
 )
 
 type TaskStatus string
+type WorkerStatus string
 
 const (
 	TaskStatusPending   TaskStatus = "pending"
@@ -55,3 +56,9 @@ type HeartbeatRequest struct {
     TaskCount int               `json:"task_count"`
     Tasks     map[string]string `json:"tasks"` // taskID -> taskStatus
 }
+
+const (
+	WorkerStatusIdle    WorkerStatus = "idle"
+	WorkerStatusBusy    WorkerStatus = "busy"
+	WorkerStatusOffline WorkerStatus = "offline"
+)
