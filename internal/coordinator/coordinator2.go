@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rishhavv/dts/internal/types"
 	"github.com/sirupsen/logrus"
 )
 
@@ -26,18 +27,6 @@ const (
 	WorkerStatusOffline WorkerStatus = "offline"
 )
 
-type Task struct {
-	ID          string     `json:"id"`
-	Type        string     `json:"type"`
-	Payload     []byte     `json:"payload"`
-	Status      TaskStatus `json:"status"`
-	WorkerID    string     `json:"worker_id"`
-	CreatedAt   time.Time  `json:"created_at"`
-	StartedAt   time.Time  `json:"started_at"`
-	CompletedAt time.Time  `json:"completed_at"`
-	Error       string     `json:"error,omitempty"`
-}
-
 type Worker struct {
 	ID            string       `json:"id"`
 	Status        WorkerStatus `json:"status"`
@@ -48,25 +37,25 @@ type Worker struct {
 }
 
 type Coordinator struct {
-	tasks     map[string]Task
+	tasks     map[string]types.Task
 	workers   map[string]*Worker
 	taskQueue []string // Queue of task IDs
 	mu        sync.RWMutex
 	logger    *logrus.Logger
 
 	// Channels for internal communication
-	taskCh     chan Task
+	taskCh     chan types.Task
 	workerCh   chan *Worker
 	shutdownCh chan struct{}
 }
 
 func NewCoordinator(logger *logrus.Logger) *Coordinator {
 	c := &Coordinator{
-		tasks:      make(map[string]Task),
+		tasks:      make(map[string]types.Task),
 		workers:    make(map[string]*Worker),
 		taskQueue:  make([]string, 0),
 		logger:     logger,
-		taskCh:     make(chan Task, 100),
+		taskCh:     make(chan types.Task, 100),
 		workerCh:   make(chan *Worker, 10),
 		shutdownCh: make(chan struct{}),
 	}
@@ -80,7 +69,7 @@ func NewCoordinator(logger *logrus.Logger) *Coordinator {
 }
 
 // SubmitTask adds a new task to the system
-func (c *Coordinator) SubmitTask(task Task) error {
+func (c *Coordinator) SubmitTask(task types.Task) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -88,7 +77,7 @@ func (c *Coordinator) SubmitTask(task Task) error {
 		return fmt.Errorf("task with ID %s already exists", task.ID)
 	}
 
-	task.Status = TaskStatusPending
+	task.Status = types.TaskStatusPending
 	task.CreatedAt = time.Now()
 
 	c.tasks[task.ID] = task
@@ -97,13 +86,13 @@ func (c *Coordinator) SubmitTask(task Task) error {
 	c.logger.WithFields(logrus.Fields{
 		"task_id": task.ID,
 		"type":    task.Type,
-	}).Info("Task submitted")
+	}).Info("types.Task submitted")
 
 	// Notify task distribution loop
 	select {
 	case c.taskCh <- task:
 	default:
-		c.logger.Warn("Task channel full, distribution may be delayed")
+		c.logger.Warn("types.Task channel full, distribution may be delayed")
 	}
 
 	return nil
@@ -196,7 +185,7 @@ func (c *Coordinator) processPendingTasks() {
 	}
 }
 
-func (c *Coordinator) selectWorker(workers []*Worker, task Task) *Worker {
+func (c *Coordinator) selectWorker(workers []*Worker, task types.Task) *Worker {
 	// Simple selection strategy - choose worker with least tasks
 	var selectedWorker *Worker
 	minTasks := int(^uint(0) >> 1) // Max int
@@ -220,13 +209,13 @@ func (c *Coordinator) selectWorker(workers []*Worker, task Task) *Worker {
 	return selectedWorker
 }
 
-func (c *Coordinator) hasRequiredCapabilities(worker *Worker, task Task) bool {
+func (c *Coordinator) hasRequiredCapabilities(worker *Worker, task types.Task) bool {
 	// Implement capability matching logic here
 	return true // Simplified for this example
 }
 
-func (c *Coordinator) assignTaskToWorker(task Task, worker *Worker) {
-	task.Status = TaskStatusAssigned
+func (c *Coordinator) assignTaskToWorker(task types.Task, worker *Worker) {
+	task.Status = types.TaskStatusAssigned
 	task.WorkerID = worker.ID
 	c.tasks[task.ID] = task
 
@@ -237,7 +226,7 @@ func (c *Coordinator) assignTaskToWorker(task Task, worker *Worker) {
 	c.logger.WithFields(logrus.Fields{
 		"task_id":   task.ID,
 		"worker_id": worker.ID,
-	}).Info("Task assigned to worker")
+	}).Info("types.Task assigned to worker")
 }
 
 // UpdateTaskStatus handles status updates from workers
@@ -250,7 +239,7 @@ func (c *Coordinator) UpdateTaskStatus(taskID string, status TaskStatus, err err
 		return fmt.Errorf("task %s not found", taskID)
 	}
 
-	task.Status = status
+	task.Status = types.TaskStatus(status)
 	if err != nil {
 		task.Error = err.Error()
 	}
@@ -269,7 +258,7 @@ func (c *Coordinator) UpdateTaskStatus(taskID string, status TaskStatus, err err
 		"task_id": taskID,
 		"status":  status,
 		"error":   err,
-	}).Info("Task status updated")
+	}).Info("types.Task status updated")
 
 	return nil
 }
@@ -316,7 +305,7 @@ func (c *Coordinator) checkWorkersHealth() {
 			// Reassign any tasks from this worker
 			if worker.CurrentTaskID != "" {
 				if task, exists := c.tasks[worker.CurrentTaskID]; exists {
-					task.Status = TaskStatusPending
+					task.Status = types.TaskStatusPending
 					task.WorkerID = ""
 					c.tasks[task.ID] = task
 					c.taskQueue = append(c.taskQueue, task.ID)
@@ -339,13 +328,13 @@ func (c *Coordinator) Shutdown() {
 }
 
 // GetTaskStatus returns the current status of a task
-func (c *Coordinator) GetTaskStatus(taskID string) (Task, error) {
+func (c *Coordinator) GetTaskStatus(taskID string) (types.Task, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
 	task, exists := c.tasks[taskID]
 	if !exists {
-		return Task{}, fmt.Errorf("task %s not found", taskID)
+		return types.Task{}, fmt.Errorf("task %s not found", taskID)
 	}
 
 	return task, nil
@@ -362,4 +351,50 @@ func (c *Coordinator) GetWorkerStatus(workerID string) (*Worker, error) {
 	}
 
 	return worker, nil
+}
+
+// GetNextTask assigns and returns the next available task for a worker
+func (c *Coordinator) GetNextTask(workerID string) (*types.Task, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Verify worker exists and is active
+	worker, exists := c.workers[workerID]
+	if !exists {
+		return nil, fmt.Errorf("worker %s not found", workerID)
+	}
+
+	// Check if worker already has a task
+	if worker.CurrentTaskID != "" {
+		return nil, fmt.Errorf("worker %s already has task %s assigned", workerID, worker.CurrentTaskID)
+	}
+
+	// Get next task from queue
+	if len(c.taskQueue) == 0 {
+		return nil, nil // No tasks available
+	}
+
+	// Pop next task from queue
+	taskID := c.taskQueue[0]
+	c.taskQueue = c.taskQueue[1:]
+
+	task := c.tasks[taskID]
+	task.Status = types.TaskStatusAssigned
+	task.WorkerID = workerID
+	task.AssignedAt = time.Now()
+
+	// Update task in map
+	c.tasks[taskID] = task
+
+	// Update worker
+	worker.CurrentTaskID = taskID
+	worker.TaskCount++
+	c.workers[workerID] = worker
+
+	c.logger.WithFields(logrus.Fields{
+		"task_id":   taskID,
+		"worker_id": workerID,
+	}).Info("types.Task assigned to worker")
+
+	return &task, nil
 }

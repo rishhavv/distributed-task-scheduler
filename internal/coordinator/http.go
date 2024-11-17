@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -24,17 +25,26 @@ func NewHttpServer(coordinator *Coordinator, logger *logrus.Logger) *HttpServer 
 
 func (s *HttpServer) RegisterRoutes(r *mux.Router) {
 	r.HandleFunc("/tasks", s.handleSubmitTask).Methods("POST")
-	// r.HandleFunc("/tasks", s.handleListTasks).Methods("GET")
+	r.HandleFunc("/tasks/next/{workerID}", s.handleGetNextTask).Methods("GET")
+	r.HandleFunc("/tasks/{taskID}/status", s.handleUpdateTaskStatus).Methods("PUT")
 	r.HandleFunc("/workers", s.handleRegisterWorker).Methods("POST")
 	r.HandleFunc("/workers/{workerID}/heartbeat", s.handleWorkerHeartbeat).Methods("POST")
 	r.HandleFunc("/", s.welcomeMessage).Methods("GET")
 }
 
 func (s *HttpServer) handleSubmitTask(w http.ResponseWriter, r *http.Request) {
-	var task types.Task
-	if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
+	var taskReq types.Task
+	if err := json.NewDecoder(r.Body).Decode(&taskReq); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+
+	task := types.Task{
+		ID:        taskReq.ID,
+		Type:      taskReq.Type,
+		Payload:   taskReq.Payload,
+		Status:    types.TaskStatusPending,
+		CreatedAt: time.Now(),
 	}
 
 	if err := s.coordinator.SubmitTask(task); err != nil {
@@ -46,13 +56,57 @@ func (s *HttpServer) handleSubmitTask(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(task)
 }
 
+func (s *HttpServer) handleGetNextTask(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	workerID := vars["workerID"]
+
+	task, err := s.coordinator.GetNextTask(workerID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if task == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	json.NewEncoder(w).Encode(task)
+}
+
+func (s *HttpServer) handleUpdateTaskStatus(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	taskID := vars["taskID"]
+
+	var update struct {
+		Status types.TaskStatus `json:"status"`
+		Error  string           `json:"error,omitempty"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var taskErr error
+	if update.Error != "" {
+		taskErr = fmt.Errorf(update.Error)
+	}
+
+	if err := s.coordinator.UpdateTaskStatus(taskID, TaskStatus(update.Status), taskErr); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
 func (s *HttpServer) welcomeMessage(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Welcome to the Distributed Task Scheduler!"))
 }
 
-// In your coordinator package
-func (c *Coordinator) handleWorkerHeartbeat(w http.ResponseWriter, r *http.Request) {
+func (s *HttpServer) handleWorkerHeartbeat(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	workerID := vars["workerID"]
 
@@ -62,77 +116,48 @@ func (c *Coordinator) handleWorkerHeartbeat(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	c.mu.Lock()
-	if worker, exists := c.workers[workerID]; exists {
-		worker.LastPing = time.Now()
-		worker.Status = heartbeat.Status
-		// Update task statuses
-		for taskID, status := range heartbeat.Tasks {
-			if task, exists := c.tasks[taskID]; exists {
-				task.Status = status
-				c.tasks[taskID] = task
-			}
-		}
-		c.workers[workerID] = worker
-	} else {
-		c.logger.WithField("worker_id", workerID).Warn("Heartbeat from unregistered worker")
-		http.Error(w, "Worker not registered", http.StatusNotFound)
-		c.mu.Unlock()
+	worker, err := s.coordinator.GetWorkerStatus(workerID)
+	if err != nil {
+		http.Error(w, "Worker not found", http.StatusNotFound)
 		return
 	}
-	c.mu.Unlock()
+
+	worker.LastHeartbeat = time.Now()
+	worker.Status = WorkerStatus(heartbeat.Status)
+	worker.TaskCount = heartbeat.TaskCount
+
+	for taskID, status := range heartbeat.Tasks {
+		if err := s.coordinator.UpdateTaskStatus(taskID, TaskStatus(status), nil); err != nil {
+			s.logger.WithError(err).WithField("task_id", taskID).Error("Failed to update task status")
+		}
+	}
 
 	w.WriteHeader(http.StatusOK)
 }
 
-// Add worker cleanup mechanism in coordinator
-func (c *Coordinator) StartWorkerCleanup(cleanupInterval time.Duration) {
-	go func() {
-		ticker := time.NewTicker(cleanupInterval)
-		for range ticker.C {
-			c.cleanupInactiveWorkers()
-		}
-	}()
-}
-
-func (c *Coordinator) cleanupInactiveWorkers() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	threshold := time.Now().Add(-15 * time.Second) // Consider workers inactive after 15s
-	for workerID, worker := range c.workers {
-		if worker.LastPing.Before(threshold) {
-			c.logger.WithField("worker_id", workerID).Info("Removing inactive worker")
-			// Reassign tasks from this worker
-			for taskID, task := range c.tasks {
-				if task.WorkerID == workerID {
-					task.Status = "pending"
-					task.WorkerID = ""
-					c.tasks[taskID] = task
-					c.taskQueue = append(c.taskQueue, taskID)
-				}
-			}
-			delete(c.workers, workerID)
-		}
-	}
-}
-
 func (s *HttpServer) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
-	registrationRequest := types.RegistrationRequest{}
-	if err := json.NewDecoder(r.Body).Decode(&registrationRequest); err != nil {
+	var req types.RegistrationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid registration data", http.StatusBadRequest)
 		return
 	}
-	success, err := s.coordinator.RegisterWorker(registrationRequest.ID)
-	if err != nil {
-		http.Error(w, "Failed to register worker", http.StatusInternalServerError)
+
+	worker := &Worker{
+		ID:            req.ID,
+		Status:        WorkerStatusIdle,
+		LastHeartbeat: time.Now(),
+	}
+
+	if err := s.coordinator.RegisterWorker(worker); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
 	response := types.RegistrationResponse{
-		WorkerID: registrationRequest.ID,
-		Success:  success,
+		WorkerID: worker.ID,
+		Success:  true,
 	}
+
+	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(response)
 }
-
-// Add other handlers simila´rly

@@ -26,6 +26,10 @@ type Task struct {
 	CreatedAt time.Time  `json:"created_at"`
 	Data      []byte     `json:"data"`
 	WorkerID  string     `json:"worker_id,omitempty"`
+	Error     string     `json:"error,omitempty"`
+	Payload   []byte     `json:"payload,omitempty"`
+	AssignedAt time.Time  `json:"assigned_at,omitempty"`
+	CompletedAt time.Time  `json:"completed_at,omitempty"`
 }
 
 type Worker struct {
