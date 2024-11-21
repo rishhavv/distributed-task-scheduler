@@ -1,259 +1,305 @@
-// package worker
+package worker
 
-// import (
-// 	"bytes"
-// 	"context"
-// 	"encoding/json"
-// 	"fmt"
-// 	"net/http"
-// 	"sync"
-// 	"time"
-// 	"bytes"
-//     "encoding/json"
-//     "fmt"
-//     "time"
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"sync"
+	"time"
 
-// 	"github.com/rishhavv/dts/internal/types"
-// 	"github.com/sirupsen/logrus"
-// )
+	"github.com/rishhavv/dts/internal/types"
+	"github.com/sirupsen/logrus"
+)
 
-// type Worker struct {
-// 	ID         string
-// 	Status     TaskStatus
-// 	ServerURL  string // Coordinator URL
-// 	httpClient *http.Client
-// 	logger     *logrus.Logger
-// 	tasks      map[string] // Currently assigned tasks
-// 	mu         sync.RWMutex
-// 	lastPing   time.Time
-// 	firstRun   time.Time
-// 	registered bool
-// }
+type Worker struct {
+	ID           string
+	Capabilities []string
+	ServerURL    string // Coordinator URL
+	httpClient   *http.Client
+	logger       *logrus.Logger
+	Tasks        map[string]types.TaskStatus
 
-// // Registration request/response structures
+	// Worker state
+	Status        types.WorkerStatus
+	currentTaskID string
+	taskCount     int
+	lastHeartbeat time.Time
+	mu            sync.RWMutex
 
-// func (w *Worker) Register() error {
-// 	w.logger.WithField("worker_id", w.ID).Info("Attempting to register with coordinator")
+	// Control channels
+	shutdownCh chan struct{}
+}
 
-// 	// Prepare registration request
-// 	regRequest := types.RegistrationRequest{
-// 		ID:     w.ID,
-// 		Status: "available",
-// 	}
+type WorkerConfig struct {
+	ID           string
+	Capabilities []string
+	ServerURL    string
+	Logger       *logrus.Logger
+}
 
-// 	// Marshal the request
-// 	jsonData, err := json.Marshal(regRequest)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to marshal registration request: %w", err)
-// 	}
+func NewWorker(cfg WorkerConfig) *Worker {
+	return &Worker{
+		ID:           cfg.ID,
+		Capabilities: cfg.Capabilities,
+		ServerURL:    cfg.ServerURL,
+		logger:       cfg.Logger,
+		Status:       types.WorkerStatusIdle,
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+		},
+		shutdownCh: make(chan struct{}),
+	}
+}
 
-// 	// Create HTTP request
-// 	registerURL := fmt.Sprintf("%s/workers", w.ServerURL)
-// 	req, err := http.NewRequest("POST", registerURL, bytes.NewBuffer(jsonData))
-// 	if err != nil {
-// 		return fmt.Errorf("failed to create registration request: %w", err)
-// 	}
+func (w *Worker) Register(ctx context.Context) error {
+	worker := &Worker{
+		ID:           w.ID,
+		Status:       types.WorkerStatusIdle,
+		Capabilities: w.Capabilities,
+	}
 
-// 	// Set headers
-// 	req.Header.Set("Content-Type", "application/json")
+	jsonData, err := json.Marshal(worker)
+	if err != nil {
+		return fmt.Errorf("failed to marshal worker: %w", err)
+	}
 
-// 	// Set timeout for registration request
-// 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-// 	defer cancel()
-// 	req = req.WithContext(ctx)
+	req, err := http.NewRequestWithContext(ctx, "POST",
+		fmt.Sprintf("%s/workers", w.ServerURL),
+		bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
 
-// 	// Send registration request
-// 	resp, err := w.httpClient.Do(req)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to send registration request: %w", err)
-// 	}
-// 	defer resp.Body.Close()
+	req.Header.Set("Content-Type", "application/json")
 
-// 	// Check response status
-// 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-// 		return fmt.Errorf("registration failed with status: %d", resp.StatusCode)
-// 	}
+	resp, err := w.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to register: %w", err)
+	}
+	defer resp.Body.Close()
 
-// 	// Parse response
-// 	var regResponse RegistrationResponse
-// 	if err := json.NewDecoder(resp.Body).Decode(&regResponse); err != nil {
-// 		return fmt.Errorf("failed to decode registration response: %w", err)
-// 	}
+	if resp.StatusCode != http.StatusCreated {
+		return fmt.Errorf("registration failed with status: %d", resp.StatusCode)
+	}
 
-// 	// Verify registration success
-// 	if !regResponse.Success {
-// 		return fmt.Errorf("registration rejected by coordinator")
-// 	}
+	w.logger.WithFields(logrus.Fields{
+		"worker_id": w.ID,
+	}).Info("Successfully registered with coordinator")
 
-// 	// Initialize worker state
-// 	w.mu.Lock()
-// 	defer w.mu.Unlock()
+	return nil
+}
 
-// 	w.Status = types.TaskStatusPending
-// 	w.LastPing = time.Now()
-// 	w.tasks = make(map[string]types.Task)
-// 	w.registered = true
+func (w *Worker) Start(ctx context.Context) error {
+	if err := w.Register(ctx); err != nil {
+		return fmt.Errorf("failed to register worker: %w", err)
+	}
 
-// 	w.logger.WithFields(logrus.Fields{
-// 		"worker_id": w.ID,
-// 		"status":    w.Status,
-// 	}).Info("Successfully registered with coordinator")
+	// Start heartbeat routine
+	go w.heartbeatLoop(ctx)
 
-// 	return nil
-// }
+	// Start task polling routine
+	go w.pollTasks(ctx)
 
-// // Helper method for retrying registration
-// func (w *Worker) RegisterWithRetry(maxAttempts int, retryDelay time.Duration) error {
-// 	var lastErr error
+	w.logger.Info("Worker started successfully")
 
-// 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-// 		err := w.Register()
-// 		if err == nil {
-// 			return nil
-// 		}
+	return nil
+}
 
-// 		lastErr = err
-// 		w.logger.WithFields(logrus.Fields{
-// 			"attempt":      attempt,
-// 			"error":        err,
-// 			"max_attempts": maxAttempts,
-// 		}).Warn("Registration attempt failed, retrying...")
+func (w *Worker) heartbeatLoop(ctx context.Context) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
 
-// 		if attempt < maxAttempts {
-// 			time.Sleep(retryDelay)
-// 		}
-// 	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-w.shutdownCh:
+			return
+		case <-ticker.C:
+			if err := w.sendHeartbeat(ctx); err != nil {
+				w.logger.WithError(err).Error("Failed to send heartbeat")
+			}
+		}
+	}
+}
 
-// 	return fmt.Errorf("failed to register after %d attempts: %w", maxAttempts, lastErr)
-// }
+func (w *Worker) sendHeartbeat(ctx context.Context) error {
+	heartbeatReq := types.HeartbeatRequest{
+		WorkerID:  w.ID,
+		Status:    string(w.Status),
+		TaskCount: 0,
+		Tasks:     make(map[string]string),
+	}
+	for taskID, status := range w.Tasks {
+		heartbeatReq.Tasks[taskID] = string(status)
+		heartbeatReq.TaskCount++
+	}
 
-// // Usage example in worker initialization:
-// func NewWorker(id string, serverURL string) *Worker {
-// 	return &Worker{
-// 		ID:        id,
-// 		ServerURL: serverURL,
-// 		Status:    "initializing",
-// 		httpClient: &http.Client{
-// 			Timeout: 10 * time.Second,
-// 		},
-// 		logger: logrus.New(),
-// 		mu:     sync.RWMutex{},
-// 	}
-// }
+	reqBody, err := json.Marshal(heartbeatReq)
+	if err != nil {
+		return fmt.Errorf("failed to marshal heartbeat request: %w", err)
+	}
 
-// // Example usage with retry:
-// func (w *Worker) Start() error {
-// 	// Try to register with retry
-// 	err := w.RegisterWithRetry(3, 5*time.Second)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to register worker: %w", err)
-// 	}
+	req, err := http.NewRequestWithContext(ctx, "POST",
+		fmt.Sprintf("%s/workers/%s/heartbeat", w.ServerURL, w.ID),
+		bytes.NewBuffer(reqBody))
+	if err != nil {
+		return fmt.Errorf("failed to create heartbeat request: %w", err)
+	}
 
-// 	// Continue with worker initialization...
-// 	return nil
-// }
+	resp, err := w.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send heartbeat: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+	fmt.Printf("heartbeat response: %s\n", string(body))
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("heartbeat failed with status: %d", resp.StatusCode)
+	}
 
-// // StartHeartbeat initiates the heartbeat goroutine
-// func (w *Worker) StartHeartbeat(ctx context.Context) error {
-//     ticker := time.NewTicker(5 * time.Second) // Configurable interval
-//     w.logger.Info("Starting heartbeat mechanism")
+	w.mu.Lock()
+	w.lastHeartbeat = time.Now()
+	w.mu.Unlock()
 
-//     go func() {
-//         for {
-//             select {
-//             case <-ctx.Done():
-//                 w.logger.Info("Stopping heartbeat mechanism")
-//                 ticker.Stop()
-//                 return
-//             case <-ticker.C:
-//                 if err := w.sendHeartbeat(); err != nil {
-//                     w.logger.WithError(err).Error("Failed to send heartbeat")
-//                     // Implement exponential backoff or reconnection logic here
-//                 }
-//             }
-//         }
-//     }()
+	return nil
+}
 
-//     return nil
-// }
+func (w *Worker) pollTasks(ctx context.Context) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
 
-// // sendHeartbeat sends a single heartbeat to the coordinator
-// func (w *Worker) sendHeartbeat() error {
-//     w.mu.RLock()
-//     currentTasks := make(map[string]string)
-//     for taskID, task := range w.tasks {
-//         currentTasks[taskID] = string(task.Status)
-//     }
-//     w.mu.RUnlock()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-w.shutdownCh:
+			return
+		case <-ticker.C:
+			w.mu.RLock()
+			if w.Status == types.WorkerStatusIdle {
+				w.mu.RUnlock()
+				if err := w.fetchAndProcessTask(ctx); err != nil {
+					w.logger.WithError(err).Debug("No task available")
+				}
+			} else {
+				w.mu.RUnlock()
+			}
+		}
+	}
+}
 
-//     heartbeat := types.HeartbeatRequest{
-//         WorkerID:  w.ID,
-//         Status:    w.Status,
-//         TaskCount: len(w.tasks),
-//         Tasks:     currentTasks,
-//     }
+func (w *Worker) fetchAndProcessTask(ctx context.Context) error {
+	print("worker info:", string(w.currentTaskID), w.Tasks)
+	req, err := http.NewRequestWithContext(ctx, "GET",
+		fmt.Sprintf("%s/tasks/next/%s", w.ServerURL, w.ID),
+		nil)
+	if err != nil {
+		return fmt.Errorf("failed to create task request: %w", err)
+	}
+	fmt.Printf("fetching task\n")
+	resp, err := w.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to fetch task: %w", err)
+	}
+	defer resp.Body.Close()
+	fmt.Printf("fetched task: %+v\n", resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+	fmt.Printf("response body: %s\n", string(body))
+	resp.Body = io.NopCloser(bytes.NewBuffer(body))
 
-//     jsonData, err := json.Marshal(heartbeat)
-//     if err != nil {
-//         return fmt.Errorf("failed to marshal heartbeat: %w", err)
-//     }
+	if resp.StatusCode == http.StatusNoContent {
+		return nil // No tasks available
+	}
 
-//     // Create heartbeat request
-//     url := fmt.Sprintf("%s/workers/%s/heartbeat", w.ServerURL, w.ID)
-//     req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
-//     if err != nil {
-//         return fmt.Errorf("failed to create heartbeat request: %w", err)
-//     }
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to fetch task with status: %d", resp.StatusCode)
+	}
 
-//     req.Header.Set("Content-Type", "application/json")
+	var task types.Task
+	if err := json.NewDecoder(resp.Body).Decode(&task); err != nil {
+		return fmt.Errorf("failed to decode task: %w", err)
+	}
 
-//     // Set timeout for heartbeat request
-//     ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-//     defer cancel()
-//     req = req.WithContext(ctx)
+	// Process task
+	w.mu.Lock()
+	w.Status = types.WorkerStatusBusy
+	w.currentTaskID = task.ID
+	w.taskCount++
+	w.mu.Unlock()
 
-//     resp, err := w.httpClient.Do(req)
-//     if err != nil {
-//         return fmt.Errorf("failed to send heartbeat: %w", err)
-//     }
-//     defer resp.Body.Close()
+	fmt.Printf("task: %+v\n", task, "moved to running")
+	// Update task status to running
+	if err := w.updateTaskStatus(ctx, task.ID, types.TaskStatusRunning, nil); err != nil {
+		w.logger.WithError(err).Error("Failed to update task status to running")
+	}
 
-//     if resp.StatusCode != http.StatusOK {
-//         return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-//     }
+	// TODO: Implement actual task processing logic here
 
-//     w.mu.Lock()
-//     w.LastPing = time.Now()
-//     w.mu.Unlock()
+	fmt.Printf("task: %+v\n", task, "moved to completed")
+	// Update final task status
+	if err := w.updateTaskStatus(ctx, task.ID, types.TaskStatusCompleted, nil); err != nil {
+		w.logger.WithError(err).Error("Failed to update task status to complete")
+	}
 
-//     return nil
-// }
+	fmt.Printf("task: %+v\n", task, "moved to idle")
+	w.mu.Lock()
+	w.Status = types.WorkerStatusIdle
+	w.currentTaskID = ""
+	w.mu.Unlock()
 
-// // Usage in worker Start method
-// func (w *Worker) Start() error {
-//     // First register the worker
-//     if err := w.Register(); err != nil {
-//         return fmt.Errorf("failed to register worker: %w", err)
-//     }
+	return nil
+}
 
-//     // Create a context with cancellation for cleanup
-//     ctx, cancel := context.WithCancel(context.Background())
-//     w.cancel = cancel // Store cancel function for cleanup
+func (w *Worker) updateTaskStatus(ctx context.Context, taskID string, status types.TaskStatus, taskErr error) error {
+	update := struct {
+		Status types.TaskStatus `json:"status"`
+		Error  string           `json:"error,omitempty"`
+	}{
+		Status: status,
+	}
+	if taskErr != nil {
+		update.Error = taskErr.Error()
+	}
 
-//     // Start heartbeat mechanism
-//     if err := w.StartHeartbeat(ctx); err != nil {
-//         return fmt.Errorf("failed to start heartbeat: %w", err)
-//     }
+	jsonData, err := json.Marshal(update)
+	if err != nil {
+		return fmt.Errorf("failed to marshal status update: %w", err)
+	}
 
-//     w.logger.Info("Worker successfully started")
-//     return nil
-// }
+	req, err := http.NewRequestWithContext(ctx, "PUT",
+		fmt.Sprintf("%s/tasks/%s/status", w.ServerURL, taskID),
+		bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("failed to create status update request: %w", err)
+	}
 
-// // Cleanup method
-// func (w *Worker) Stop() error {
-//     if w.cancel != nil {
-//         w.cancel() // This will stop the heartbeat goroutine
-//     }
-//     w.logger.Info("Worker stopped")
-//     return nil
-// }
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := w.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to update task status: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("status update failed with code: %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+func (w *Worker) Shutdown(ctx context.Context) error {
+	close(w.shutdownCh)
+	w.logger.Info("Worker shutdown complete")
+	return nil
+}
