@@ -244,9 +244,7 @@ func (c *Coordinator) UpdateTaskStatus(taskID string, status TaskStatus, err err
 	if err != nil {
 		task.Error = err.Error()
 	}
-	fmt.Printf("task: %+v\n", task, "status updated")
 	if status == TaskStatusComplete || status == TaskStatusFailed {
-		fmt.Printf("task: %+v\n", task, "moved to completed")
 		task.CompletedAt = time.Now()
 		if worker, exists := c.workers[task.WorkerID]; exists {
 			worker.Status = WorkerStatusIdle

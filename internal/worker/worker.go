@@ -155,11 +155,6 @@ func (w *Worker) sendHeartbeat(ctx context.Context) error {
 		return fmt.Errorf("failed to send heartbeat: %w", err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response body: %w", err)
-	}
-	fmt.Printf("heartbeat response: %s\n", string(body))
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("heartbeat failed with status: %d", resp.StatusCode)
 	}
@@ -196,25 +191,21 @@ func (w *Worker) pollTasks(ctx context.Context) {
 }
 
 func (w *Worker) fetchAndProcessTask(ctx context.Context) error {
-	print("worker info:", string(w.currentTaskID), w.Tasks)
 	req, err := http.NewRequestWithContext(ctx, "GET",
 		fmt.Sprintf("%s/tasks/next/%s", w.ServerURL, w.ID),
 		nil)
 	if err != nil {
 		return fmt.Errorf("failed to create task request: %w", err)
 	}
-	fmt.Printf("fetching task\n")
 	resp, err := w.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to fetch task: %w", err)
 	}
 	defer resp.Body.Close()
-	fmt.Printf("fetched task: %+v\n", resp.StatusCode)
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("failed to read response body: %w", err)
 	}
-	fmt.Printf("response body: %s\n", string(body))
 	resp.Body = io.NopCloser(bytes.NewBuffer(body))
 
 	if resp.StatusCode == http.StatusNoContent {
@@ -237,7 +228,6 @@ func (w *Worker) fetchAndProcessTask(ctx context.Context) error {
 	w.taskCount++
 	w.mu.Unlock()
 
-	fmt.Printf("task: %+v\n", task, "moved to running")
 	// Update task status to running
 	if err := w.updateTaskStatus(ctx, task.ID, types.TaskStatusRunning, nil); err != nil {
 		w.logger.WithError(err).Error("Failed to update task status to running")
@@ -245,13 +235,11 @@ func (w *Worker) fetchAndProcessTask(ctx context.Context) error {
 
 	// TODO: Implement actual task processing logic here
 
-	fmt.Printf("task: %+v\n", task, "moved to completed")
 	// Update final task status
 	if err := w.updateTaskStatus(ctx, task.ID, types.TaskStatusCompleted, nil); err != nil {
 		w.logger.WithError(err).Error("Failed to update task status to complete")
 	}
 
-	fmt.Printf("task: %+v\n", task, "moved to idle")
 	w.mu.Lock()
 	w.Status = types.WorkerStatusIdle
 	w.currentTaskID = ""
@@ -302,4 +290,32 @@ func (w *Worker) Shutdown(ctx context.Context) error {
 	close(w.shutdownCh)
 	w.logger.Info("Worker shutdown complete")
 	return nil
+}
+
+func (w *Worker) TaskSelector(taskName string, taskValue int) (int, error) {
+	switch taskName {
+	case "fibonacci":
+		return w.countFibonacci(taskValue), nil
+	case "factorial":
+		return w.countFactorial(taskValue), nil
+	case "wait":
+		time.Sleep(time.Duration(taskValue) * time.Second)
+		return taskValue, nil
+	default:
+		return 0, fmt.Errorf("unknown task: %s", taskName)
+	}
+}
+
+func (w *Worker) countFactorial(n int) int {
+	if n == 0 {
+		return 1
+	}
+	return n * w.countFactorial(n-1)
+}
+
+func (w *Worker) countFibonacci(n int) int {
+	if n == 0 || n == 1 {
+		return n
+	}
+	return w.countFibonacci(n-1) + w.countFibonacci(n-2)
 }
