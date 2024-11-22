@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rishhavv/dts/internal/types"
 	"github.com/sirupsen/logrus"
 )
@@ -30,6 +31,8 @@ func (s *HttpServer) RegisterRoutes(r *mux.Router) {
 	r.HandleFunc("/workers", s.handleRegisterWorker).Methods("POST")
 	r.HandleFunc("/workers/{workerID}/heartbeat", s.handleWorkerHeartbeat).Methods("POST")
 	r.HandleFunc("/", s.welcomeMessage).Methods("GET")
+	r.Handle("/metrics", promhttp.Handler())
+
 }
 
 func (s *HttpServer) handleSubmitTask(w http.ResponseWriter, r *http.Request) {

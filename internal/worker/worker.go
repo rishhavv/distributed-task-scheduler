@@ -10,17 +10,20 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/rishhavv/dts/internal/metrics"
 	"github.com/rishhavv/dts/internal/types"
 	"github.com/sirupsen/logrus"
 )
 
 type Worker struct {
-	ID           string
-	Capabilities []string
-	ServerURL    string // Coordinator URL
-	httpClient   *http.Client
-	logger       *logrus.Logger
-	Tasks        map[string]types.TaskStatus
+	ID                 string
+	Capabilities       []string
+	ServerURL          string // Coordinator URL
+	httpClient         *http.Client
+	logger             *logrus.Logger
+	Tasks              map[string]types.TaskStatus
+	lastTaskCompletion time.Time
 
 	// Worker state
 	Status        types.WorkerStatus
@@ -50,7 +53,8 @@ func NewWorker(cfg WorkerConfig) *Worker {
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
-		shutdownCh: make(chan struct{}),
+		shutdownCh:         make(chan struct{}),
+		lastTaskCompletion: time.Now(),
 	}
 }
 
@@ -127,6 +131,7 @@ func (w *Worker) heartbeatLoop(ctx context.Context) {
 }
 
 func (w *Worker) sendHeartbeat(ctx context.Context) error {
+	startTime := time.Now()
 	heartbeatReq := types.HeartbeatRequest{
 		WorkerID:  w.ID,
 		Status:    string(w.Status),
@@ -153,6 +158,9 @@ func (w *Worker) sendHeartbeat(ctx context.Context) error {
 	resp, err := w.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to send heartbeat: %w", err)
+	}
+	if err == nil {
+		metrics.WorkerHeartbeatLatency.WithLabelValues(w.ID).Set(time.Since(startTime).Seconds())
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -232,8 +240,13 @@ func (w *Worker) fetchAndProcessTask(ctx context.Context) error {
 	if err := w.updateTaskStatus(ctx, task.ID, types.TaskStatusRunning, nil); err != nil {
 		w.logger.WithError(err).Error("Failed to update task status to running")
 	}
-
+	timer := prometheus.NewTimer(metrics.WorkerTaskDuration.WithLabelValues(w.ID, task.Type))
+	defer timer.ObserveDuration()
+	metrics.WorkerIdleTime.WithLabelValues(w.ID).Observe(time.Since(w.lastTaskCompletion).Seconds())
 	// TODO: Implement actual task processing logic here
+	_, err = w.TaskSelector(task.Name, task.Value)
+	metrics.WorkerTasksProcessed.WithLabelValues(w.ID, task.Type).Inc()
+	w.lastTaskCompletion = time.Now()
 
 	// Update final task status
 	if err := w.updateTaskStatus(ctx, task.ID, types.TaskStatusCompleted, nil); err != nil {

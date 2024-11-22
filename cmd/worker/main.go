@@ -17,7 +17,7 @@ func main() {
 
 	// Configure and create new worker
 	workerCfg := worker.WorkerConfig{
-		ID:           "worker-1",
+		ID:           "worker-2",
 		Capabilities: []string{"general"},
 		ServerURL:    "http://localhost:8080",
 		Logger:       logger,

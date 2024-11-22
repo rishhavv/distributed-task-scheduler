@@ -5,6 +5,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/rishhavv/dts/internal/metrics"
 	"github.com/rishhavv/dts/internal/types"
 	"github.com/sirupsen/logrus"
 )
@@ -71,6 +73,7 @@ func NewCoordinator(logger *logrus.Logger) *Coordinator {
 
 // SubmitTask adds a new task to the system
 func (c *Coordinator) SubmitTask(task types.Task) error {
+	metrics.TaskQueueLength.Inc()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -111,11 +114,12 @@ func (c *Coordinator) RegisterWorker(worker *Worker) error {
 	worker.Status = WorkerStatusIdle
 	worker.LastHeartbeat = time.Now()
 	c.workers[worker.ID] = worker
-
+	fmt.Printf("Worker registered: %s, Total registrations: %v\n", worker.ID, metrics.WorkerRegistrations.Desc())
 	c.logger.WithFields(logrus.Fields{
 		"worker_id":    worker.ID,
 		"capabilities": worker.Capabilities,
 	}).Info("Worker registered")
+	metrics.WorkerRegistrations.Add(1)
 
 	// Notify worker registration
 	select {
@@ -216,6 +220,12 @@ func (c *Coordinator) hasRequiredCapabilities(worker *Worker, task types.Task) b
 }
 
 func (c *Coordinator) assignTaskToWorker(task types.Task, worker *Worker) {
+	timer := prometheus.NewTimer(metrics.TaskSchedulingLatency)
+	defer timer.ObserveDuration()
+
+	waitTime := time.Since(task.CreatedAt)
+	metrics.TaskQueueWaitTime.WithLabelValues(task.Type).Observe(waitTime.Seconds())
+	metrics.TaskQueueLength.Dec()
 	task.Status = types.TaskStatusAssigned
 	task.WorkerID = worker.ID
 	c.tasks[task.ID] = task
@@ -234,6 +244,14 @@ func (c *Coordinator) assignTaskToWorker(task types.Task, worker *Worker) {
 func (c *Coordinator) UpdateTaskStatus(taskID string, status TaskStatus, err error) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	oldStatus := c.tasks[taskID].Status
+	metrics.TaskStatusTransitions.WithLabelValues(string(oldStatus), string(status)).Inc()
+
+	if status == TaskStatusComplete {
+		completionTime := time.Since(c.tasks[taskID].CreatedAt)
+		metrics.TaskCompletionTime.WithLabelValues(c.tasks[taskID].Type).Observe(completionTime.Seconds())
+	}
 
 	task, exists := c.tasks[taskID]
 	if !exists {
@@ -300,6 +318,8 @@ func (c *Coordinator) checkWorkersHealth() {
 	for id, worker := range c.workers {
 		// If no heartbeat received in last minute, mark worker as offline
 		if now.Sub(worker.LastHeartbeat) > 10*time.Second {
+			metrics.WorkerDeregistrations.WithLabelValues("heartbeat_timeout").Inc()
+			metrics.TaskReassignments.WithLabelValues("worker_timeout").Inc()
 			worker.Status = WorkerStatusOffline
 
 			// Reassign any tasks from this worker
