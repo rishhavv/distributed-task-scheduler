@@ -16,6 +16,79 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+func metricsHandler(w http.ResponseWriter, r *http.Request) {
+	// Basic HTML header with some simple styling
+	fmt.Fprintf(w, `
+		<html>
+		<head>
+			<title>DTS Metrics</title>
+			<style>
+				body { font-family: sans-serif; margin: 40px; }
+				.metric { margin-bottom: 20px; }
+				.metric-name { font-weight: bold; color: #2c3e50; }
+				.metric-value { margin-left: 20px; color: #34495e; }
+				.metric-type { color: #7f8c8d; font-size: 0.9em; }
+			</style>
+		</head>
+		<body>
+			<h1>DTS Metrics Dashboard</h1>
+	`)
+
+	// Fetch metrics from the /metrics endpoint
+	resp, err := http.Get("http://localhost:2112/metrics")
+	if err != nil {
+		fmt.Fprintf(w, "<p>Error fetching metrics: %v</p>", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	// Parse metrics
+	var parser expfmt.TextParser
+	metrics, err := parser.TextToMetricFamilies(resp.Body)
+	if err != nil {
+		fmt.Fprintf(w, "<p>Error parsing metrics: %v</p>", err)
+		return
+	}
+
+	// Display metrics
+	for name, mf := range metrics {
+		fmt.Fprintf(w, `<div class="metric">`)
+		fmt.Fprintf(w, `<div class="metric-name">%s</div>`, name)
+		fmt.Fprintf(w, `<div class="metric-type">Type: %s</div>`, mf.GetType().String())
+
+		for _, m := range mf.GetMetric() {
+			fmt.Fprintf(w, `<div class="metric-value">`)
+
+			// Display labels if present
+			if len(m.GetLabel()) > 0 {
+				fmt.Fprintf(w, "{")
+				for i, label := range m.GetLabel() {
+					if i > 0 {
+						fmt.Fprintf(w, ", ")
+					}
+					fmt.Fprintf(w, "%s=%s", label.GetName(), label.GetValue())
+				}
+				fmt.Fprintf(w, "} ")
+			}
+
+			// Display value based on metric type
+			switch mf.GetType() {
+			case dto.MetricType_COUNTER:
+				fmt.Fprintf(w, "Value: %.2f", m.GetCounter().GetValue())
+			case dto.MetricType_GAUGE:
+				fmt.Fprintf(w, "Value: %.2f", m.GetGauge().GetValue())
+			case dto.MetricType_HISTOGRAM:
+				fmt.Fprintf(w, "Count: %d, Sum: %.2f", m.GetHistogram().GetSampleCount(), m.GetHistogram().GetSampleSum())
+			}
+
+			fmt.Fprintf(w, "</div>")
+		}
+		fmt.Fprintf(w, "</div>")
+	}
+
+	fmt.Fprintf(w, "</body></html>")
+}
+
 type MetricsCollector struct {
 	registry *prometheus.Registry
 	logger   *logrus.Logger
@@ -134,6 +207,7 @@ func main() {
 
 	collector := NewMetricsCollector(logger)
 	http.Handle("/metrics", promhttp.HandlerFor(collector.registry, promhttp.HandlerOpts{}))
+	http.HandleFunc("/", metricsHandler)
 
 	// Periodically fetch and update metrics
 	go func() {
@@ -145,18 +219,19 @@ func main() {
 				logger.Error(err)
 			} else {
 				collector.updateRegistry(coordMetrics)
+				logger.Info("Updated coordinator metrics")
 			}
 
 			// Scrape worker metrics (assuming workers are on ports 8081, 8082, etc.)
-			workerPorts := []string{"8081", "8082"} // Add more ports as needed
-			for _, port := range workerPorts {
-				workerMetrics, err := collector.scrapeEndpoint(fmt.Sprintf("http://localhost:%s/metrics", port))
-				if err != nil {
-					logger.Error(err)
-					continue
-				}
-				collector.updateRegistry(workerMetrics)
-			}
+			// workerPorts := []string{"8081", "8082"} // Add more ports as needed
+			// for _, port := range workerPorts {
+			// 	workerMetrics, err := collector.scrapeEndpoint(fmt.Sprintf("http://localhost:%s/metrics", port))
+			// 	if err != nil {
+			// 		logger.Error(err)
+			// 		continue
+			// 	}
+			// 	collector.updateRegistry(workerMetrics)
+			// }
 		}
 	}()
 

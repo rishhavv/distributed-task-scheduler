@@ -5,7 +5,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rishhavv/dts/internal/metrics"
 	"github.com/rishhavv/dts/internal/types"
 	"github.com/sirupsen/logrus"
@@ -182,8 +181,19 @@ func (c *Coordinator) processPendingTasks() {
 			break
 		}
 
-		// Assign task to worker
-		c.assignTaskToWorker(task, worker)
+		// Assign task to worker using AssignTaskToWorker function
+		workerID, err := c.AssignTaskToWorker(&task, "round-robin") // Using round-robin as default algorithm
+		if err != nil {
+			c.logger.WithError(err).Error("Failed to assign task to worker")
+			continue
+		}
+
+		// Update worker status
+		if worker, exists := c.workers[workerID]; exists {
+			worker.Status = WorkerStatusBusy
+			worker.CurrentTaskID = task.ID
+			worker.TaskCount++
+		}
 
 		// Remove task from queue
 		c.taskQueue = c.taskQueue[1:]
@@ -214,31 +224,31 @@ func (c *Coordinator) selectWorker(workers []*Worker, task types.Task) *Worker {
 	return selectedWorker
 }
 
-func (c *Coordinator) hasRequiredCapabilities(worker *Worker, task types.Task) bool {
-	// Implement capability matching logic here
-	return true // Simplified for this example
-}
+// func (c *Coordinator) hasRequiredCapabilities(worker *Worker, task types.Task) bool {
+// 	// Implement capability matching logic here
+// 	return true // Simplified for this example
+// }
 
-func (c *Coordinator) assignTaskToWorker(task types.Task, worker *Worker) {
-	timer := prometheus.NewTimer(metrics.TaskSchedulingLatency)
-	defer timer.ObserveDuration()
+// func (c *Coordinator) assignTaskToWorker(task types.Task, worker *Worker) {
+// 	timer := prometheus.NewTimer(metrics.TaskSchedulingLatency)
+// 	defer timer.ObserveDuration()
 
-	waitTime := time.Since(task.CreatedAt)
-	metrics.TaskQueueWaitTime.WithLabelValues(task.Type).Observe(waitTime.Seconds())
-	metrics.TaskQueueLength.Dec()
-	task.Status = types.TaskStatusAssigned
-	task.WorkerID = worker.ID
-	c.tasks[task.ID] = task
+// 	waitTime := time.Since(task.CreatedAt)
+// 	metrics.TaskQueueWaitTime.WithLabelValues(task.Type).Observe(waitTime.Seconds())
+// 	metrics.TaskQueueLength.Dec()
+// 	task.Status = types.TaskStatusAssigned
+// 	task.WorkerID = worker.ID
+// 	c.tasks[task.ID] = task
 
-	worker.Status = WorkerStatusBusy
-	worker.CurrentTaskID = task.ID
-	worker.TaskCount++
+// 	worker.Status = WorkerStatusBusy
+// 	worker.CurrentTaskID = task.ID
+// 	worker.TaskCount++
 
-	c.logger.WithFields(logrus.Fields{
-		"task_id":   task.ID,
-		"worker_id": worker.ID,
-	}).Info("types.Task assigned to worker")
-}
+// 	c.logger.WithFields(logrus.Fields{
+// 		"task_id":   task.ID,
+// 		"worker_id": worker.ID,
+// 	}).Info("types.Task assigned to worker")
+// }
 
 // UpdateTaskStatus handles status updates from workers
 func (c *Coordinator) UpdateTaskStatus(taskID string, status TaskStatus, err error) error {
@@ -420,4 +430,103 @@ func (c *Coordinator) GetNextTask(workerID string) (*types.Task, error) {
 	}).Info("types.Task assigned to worker")
 
 	return &task, nil
+}
+
+// AssignTaskToWorker assigns a task to a worker using the specified scheduling algorithm
+func (c *Coordinator) AssignTaskToWorker(task *types.Task, algorithm string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var selectedWorkerID string
+
+	// Get list of available workers
+	availableWorkers := make([]*Worker, 0)
+	for _, worker := range c.workers {
+		if worker.Status == WorkerStatusIdle {
+			availableWorkers = append(availableWorkers, worker)
+		}
+	}
+
+	if len(availableWorkers) == 0 {
+		return "", fmt.Errorf("no available workers")
+	}
+
+	switch algorithm {
+	case "round-robin":
+		// Simple round robin - pick next worker in sequence
+		selectedWorkerID = availableWorkers[len(c.taskQueue)%len(availableWorkers)].ID
+
+	case "fcfs":
+		// First available worker gets the task
+		selectedWorkerID = availableWorkers[0].ID
+
+	case "least-loaded":
+		// Pick worker with lowest task count
+		minTasks := availableWorkers[0].TaskCount
+		selectedWorkerID = availableWorkers[0].ID
+		for _, worker := range availableWorkers {
+			if worker.TaskCount < minTasks {
+				minTasks = worker.TaskCount
+				selectedWorkerID = worker.ID
+			}
+		}
+
+	case "priority":
+		// Assign high priority tasks to workers with more capabilities
+		maxCaps := len(availableWorkers[0].Capabilities)
+		selectedWorkerID = availableWorkers[0].ID
+		for _, worker := range availableWorkers {
+			if len(worker.Capabilities) > maxCaps {
+				maxCaps = len(worker.Capabilities)
+				selectedWorkerID = worker.ID
+			}
+		}
+
+	case "consistent-hash":
+		// Simple consistent hashing based on task ID
+		hash := 0
+		for _, c := range task.ID {
+			hash = 31*hash + int(c)
+		}
+		selectedWorkerID = availableWorkers[hash%len(availableWorkers)].ID
+
+	case "weighted-rr":
+		// Weight based on worker capabilities
+		totalWeight := 0
+		weights := make([]int, len(availableWorkers))
+		for i, worker := range availableWorkers {
+			weight := len(worker.Capabilities)
+			weights[i] = weight
+			totalWeight += weight
+		}
+
+		// Pick worker based on weighted distribution
+		target := len(c.taskQueue) % totalWeight
+		cumulative := 0
+		for i, weight := range weights {
+			cumulative += weight
+			if target < cumulative {
+				selectedWorkerID = availableWorkers[i].ID
+				break
+			}
+		}
+
+	default:
+		return "", fmt.Errorf("unknown scheduling algorithm: %s", algorithm)
+	}
+
+	// Update worker status
+	worker := c.workers[selectedWorkerID]
+	worker.Status = WorkerStatusBusy
+	worker.CurrentTaskID = task.ID
+	worker.TaskCount++
+
+	// Update task
+	task.WorkerID = selectedWorkerID
+	task.Status = types.TaskStatusAssigned
+	task.AssignedAt = time.Now()
+
+	metrics.TaskAssignmentLatency.WithLabelValues(selectedWorkerID).Observe(time.Since(task.CreatedAt).Seconds())
+
+	return selectedWorkerID, nil
 }

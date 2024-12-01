@@ -90,4 +90,10 @@ var (
 		Name: "task_status_transitions_total",
 		Help: "Number of task status transitions",
 	}, []string{"from_status", "to_status"})
+
+	TaskAssignmentLatency = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "task_assignment_latency_seconds",
+		Help:    "Time taken to assign a task to a worker",
+		Buckets: prometheus.ExponentialBuckets(0.1, 2.0, 10),
+	}, []string{"worker_id"})
 )
