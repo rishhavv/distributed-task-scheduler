@@ -119,6 +119,7 @@ func (c *Coordinator) RegisterWorker(worker *Worker) error {
 		"capabilities": worker.Capabilities,
 	}).Info("Worker registered")
 	metrics.WorkerRegistrations.Add(1)
+	metrics.WorkersActive.Inc()
 
 	// Notify worker registration
 	select {
@@ -224,10 +225,10 @@ func (c *Coordinator) selectWorker(workers []*Worker, task types.Task) *Worker {
 	return selectedWorker
 }
 
-// func (c *Coordinator) hasRequiredCapabilities(worker *Worker, task types.Task) bool {
-// 	// Implement capability matching logic here
-// 	return true // Simplified for this example
-// }
+func (c *Coordinator) hasRequiredCapabilities(worker *Worker, task types.Task) bool {
+	// Implement capability matching logic here
+	return true // Simplified for this example
+}
 
 // func (c *Coordinator) assignTaskToWorker(task types.Task, worker *Worker) {
 // 	timer := prometheus.NewTimer(metrics.TaskSchedulingLatency)
@@ -330,6 +331,7 @@ func (c *Coordinator) checkWorkersHealth() {
 		if now.Sub(worker.LastHeartbeat) > 10*time.Second {
 			metrics.WorkerDeregistrations.WithLabelValues("heartbeat_timeout").Inc()
 			metrics.TaskReassignments.WithLabelValues("worker_timeout").Inc()
+			metrics.WorkersActive.Dec()
 			worker.Status = WorkerStatusOffline
 
 			// Reassign any tasks from this worker

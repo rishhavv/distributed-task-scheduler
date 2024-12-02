@@ -170,12 +170,22 @@ func (mc *MetricsCollector) updateGauge(mf *dto.MetricFamily) {
 	if existing, err := mc.registry.Gather(); err == nil {
 		for _, m := range existing {
 			if m.GetName() == mf.GetName() {
-				return
+				// Find the existing gauge in the registry and update it
+				check := mc.registry.Unregister(prometheus.NewGauge(prometheus.GaugeOpts{
+					Name: mf.GetName(),
+					Help: mf.GetHelp(),
+				}))
+				if check == false {
+					mc.logger.Warn("Failed to unregister gauge:", mf.GetName())
+				}
 			}
 		}
 	}
 
 	mc.registry.MustRegister(gauge)
+	if mf.GetName() == "coordinator_worker_registrations_total" {
+		fmt.Println("Gauge:", mf.GetName(), mf.GetMetric()[0].GetGauge().GetValue(), "\n\n")
+	}
 	gauge.Set(mf.GetMetric()[0].GetGauge().GetValue())
 }
 
