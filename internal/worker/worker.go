@@ -13,6 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rishhavv/dts/internal/metrics"
 	"github.com/rishhavv/dts/internal/types"
+	"github.com/rishhavv/dts/tasks"
 	"github.com/sirupsen/logrus"
 )
 
@@ -135,7 +136,7 @@ func (w *Worker) sendHeartbeat(ctx context.Context) error {
 	heartbeatReq := types.HeartbeatRequest{
 		WorkerID:  w.ID,
 		Status:    string(w.Status),
-		TaskCount: 0,
+		TaskCount: w.taskCount,
 		Tasks:     make(map[string]string),
 	}
 	for taskID, status := range w.Tasks {
@@ -154,6 +155,7 @@ func (w *Worker) sendHeartbeat(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to create heartbeat request: %w", err)
 	}
+	fmt.Println("Request: ", fmt.Sprintf("%s/workers/%s/heartbeat", w.ServerURL, w.ID), req.Body)
 
 	resp, err := w.httpClient.Do(req)
 	if err != nil {
@@ -202,6 +204,7 @@ func (w *Worker) fetchAndProcessTask(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, "GET",
 		fmt.Sprintf("%s/tasks/next/%s", w.ServerURL, w.ID),
 		nil)
+
 	if err != nil {
 		return fmt.Errorf("failed to create task request: %w", err)
 	}
@@ -244,7 +247,7 @@ func (w *Worker) fetchAndProcessTask(ctx context.Context) error {
 	defer timer.ObserveDuration()
 	metrics.WorkerIdleTime.WithLabelValues(w.ID).Observe(time.Since(w.lastTaskCompletion).Seconds())
 	// TODO: Implement actual task processing logic here
-	_, err = w.TaskSelector(task.Name, task.Value)
+	_, err = tasks.RunWorkload(task.Type, task.Name, task.Value)
 	metrics.WorkerTasksProcessed.WithLabelValues(w.ID, task.Type).Inc()
 	w.lastTaskCompletion = time.Now()
 

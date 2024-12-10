@@ -36,27 +36,19 @@ func (s *HttpServer) RegisterRoutes(r *mux.Router) {
 }
 
 func (s *HttpServer) handleSubmitTask(w http.ResponseWriter, r *http.Request) {
-	var taskReq types.Task
+	var taskReq types.TaskSubmitRequest
 	if err := json.NewDecoder(r.Body).Decode(&taskReq); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	task := types.Task{
-		ID:        taskReq.ID,
-		Type:      taskReq.Type,
-		Payload:   taskReq.Payload,
-		Status:    types.TaskStatusPending,
-		CreatedAt: time.Now(),
-	}
-
-	if err := s.coordinator.SubmitTask(task); err != nil {
+	if err := s.coordinator.SubmitTask(taskReq); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(task)
+	json.NewEncoder(w).Encode("success")
 }
 
 func (s *HttpServer) handleGetNextTask(w http.ResponseWriter, r *http.Request) {
@@ -70,9 +62,11 @@ func (s *HttpServer) handleGetNextTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if task == nil {
+		fmt.Println("No task available")
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	fmt.Println("Task fetched: ", task)
 
 	json.NewEncoder(w).Encode(task)
 }

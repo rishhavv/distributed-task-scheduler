@@ -52,7 +52,7 @@ func main() {
 		}(workers[i])
 	}
 
- 	// Handle graceful shutdown
+	// Handle graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 

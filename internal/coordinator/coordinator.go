@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"fmt"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -44,6 +45,7 @@ type Coordinator struct {
 	assignedQueue []string // Queue of assigned task IDs
 	mu            sync.RWMutex
 	logger        *logrus.Logger
+	algorithm     string
 
 	// Channels for internal communication
 	taskCh     chan types.Task
@@ -51,15 +53,16 @@ type Coordinator struct {
 	shutdownCh chan struct{}
 }
 
-func NewCoordinator(logger *logrus.Logger) *Coordinator {
+func NewCoordinator(logger *logrus.Logger, algorithm string) *Coordinator {
 	c := &Coordinator{
 		tasks:      make(map[string]types.Task),
 		workers:    make(map[string]*Worker),
 		taskQueue:  make([]string, 0),
 		logger:     logger,
-		taskCh:     make(chan types.Task, 100),
-		workerCh:   make(chan *Worker, 10),
+		taskCh:     make(chan types.Task, 10000),
+		workerCh:   make(chan *Worker, 100),
 		shutdownCh: make(chan struct{}),
+		algorithm:  algorithm,
 	}
 
 	// Start the task distribution goroutine
@@ -71,31 +74,47 @@ func NewCoordinator(logger *logrus.Logger) *Coordinator {
 }
 
 // SubmitTask adds a new task to the system
-func (c *Coordinator) SubmitTask(task types.Task) error {
-	metrics.TaskQueueLength.Inc()
+func (c *Coordinator) SubmitTask(taskReq types.TaskSubmitRequest) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if _, exists := c.tasks[task.ID]; exists {
-		return fmt.Errorf("task with ID %s already exists", task.ID)
+	numTasks := taskReq.Number
+	if numTasks <= 0 {
+		numTasks = 1 // Default to 1 task if not specified
 	}
 
-	task.Status = types.TaskStatusPending
-	task.CreatedAt = time.Now()
+	for i := 0; i < numTasks; i++ {
+		taskID := fmt.Sprintf("task-%d", len(c.tasks)+1)
+		workNumber := rand.Intn(10) + 1
 
-	c.tasks[task.ID] = task
-	c.taskQueue = append(c.taskQueue, task.ID)
+		task := types.Task{
+			ID:         taskID,
+			Name:       string(taskReq.TaskType),
+			Status:     types.TaskStatusPending,
+			CreatedAt:  time.Now(),
+			Value:      rand.Intn(1000), // Random value for task
+			WorkNumber: workNumber,
+		}
 
-	c.logger.WithFields(logrus.Fields{
-		"task_id": task.ID,
-		"type":    task.Type,
-	}).Info("types.Task submitted")
+		if _, exists := c.tasks[taskID]; exists {
+			continue // Skip if task ID already exists
+		}
 
-	// Notify task distribution loop
-	select {
-	case c.taskCh <- task:
-	default:
-		c.logger.Warn("types.Task channel full, distribution may be delayed")
+		c.tasks[taskID] = task
+		c.taskQueue = append(c.taskQueue, taskID)
+		metrics.TaskQueueLength.Inc()
+
+		c.logger.WithFields(logrus.Fields{
+			"task_id": taskID,
+			"type":    taskReq.TaskType,
+		}).Info("Task submitted")
+
+		// Notify task distribution loop
+		select {
+		case c.taskCh <- task:
+		default:
+			c.logger.Warn("Task channel full, distribution may be delayed")
+		}
 	}
 
 	return nil
@@ -113,7 +132,6 @@ func (c *Coordinator) RegisterWorker(worker *Worker) error {
 	worker.Status = WorkerStatusIdle
 	worker.LastHeartbeat = time.Now()
 	c.workers[worker.ID] = worker
-	fmt.Printf("Worker registered: %s, Total registrations: %v\n", worker.ID, metrics.WorkerRegistrations.Desc())
 	c.logger.WithFields(logrus.Fields{
 		"worker_id":    worker.ID,
 		"capabilities": worker.Capabilities,
@@ -176,25 +194,30 @@ func (c *Coordinator) processPendingTasks() {
 			continue
 		}
 
-		// Find suitable worker (can be enhanced with better selection strategy)
-		worker := c.selectWorker(availableWorkers, task)
-		if worker == nil {
-			break
-		}
+		//Find suitable worker (can be enhanced with better selection strategy)
+		// worker := c.selectWorker(availableWorkers, task)
+		// if worker == nil {
+		// 	break
+		// }
 
-		// Assign task to worker using AssignTaskToWorker function
-		workerID, err := c.AssignTaskToWorker(&task, "round-robin") // Using round-robin as default algorithm
+		//Assign task to worker using AssignTaskToWorker function
+		worker, err := c.AssignTaskToWorker(task, c.algorithm, availableWorkers) // Using round-robin as default algorithm
 		if err != nil {
 			c.logger.WithError(err).Error("Failed to assign task to worker")
 			continue
 		}
 
 		// Update worker status
-		if worker, exists := c.workers[workerID]; exists {
+		if worker, exists := c.workers[worker.ID]; exists {
 			worker.Status = WorkerStatusBusy
 			worker.CurrentTaskID = task.ID
 			worker.TaskCount++
 		}
+		task.WorkerID = worker.ID
+		task.Status = types.TaskStatusAssigned
+		task.AssignedAt = time.Now()
+		c.tasks[task.ID] = task
+		metrics.TaskAssignmentLatency.WithLabelValues(worker.ID).Observe(time.Since(task.CreatedAt).Seconds())
 
 		// Remove task from queue
 		c.taskQueue = c.taskQueue[1:]
@@ -278,6 +301,11 @@ func (c *Coordinator) UpdateTaskStatus(taskID string, status TaskStatus, err err
 		if worker, exists := c.workers[task.WorkerID]; exists {
 			worker.Status = WorkerStatusIdle
 			worker.CurrentTaskID = ""
+		} else {
+			c.logger.WithFields(logrus.Fields{
+				"task_id":   task.ID,
+				"worker_id": task.WorkerID,
+			}).Error("Worker not found while updating task status")
 		}
 	}
 
@@ -328,7 +356,7 @@ func (c *Coordinator) checkWorkersHealth() {
 	now := time.Now()
 	for id, worker := range c.workers {
 		// If no heartbeat received in last minute, mark worker as offline
-		if now.Sub(worker.LastHeartbeat) > 10*time.Second {
+		if now.Sub(worker.LastHeartbeat) > 30*time.Second {
 			metrics.WorkerDeregistrations.WithLabelValues("heartbeat_timeout").Inc()
 			metrics.TaskReassignments.WithLabelValues("worker_timeout").Inc()
 			metrics.WorkersActive.Dec()
@@ -399,6 +427,7 @@ func (c *Coordinator) GetNextTask(workerID string) (*types.Task, error) {
 	// Check if worker already has a task
 	// Return the same task if it is already assigned
 	if worker.CurrentTaskID != "" {
+		fmt.Println("Task already assigned, returning same task: ", worker.CurrentTaskID)
 		task := c.tasks[worker.CurrentTaskID]
 		// if
 		return &task, nil
@@ -435,28 +464,22 @@ func (c *Coordinator) GetNextTask(workerID string) (*types.Task, error) {
 }
 
 // AssignTaskToWorker assigns a task to a worker using the specified scheduling algorithm
-func (c *Coordinator) AssignTaskToWorker(task *types.Task, algorithm string) (string, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func (c *Coordinator) AssignTaskToWorker(task types.Task, algorithm string, availableWorkers []*Worker) (*Worker, error) {
 
 	var selectedWorkerID string
 
-	// Get list of available workers
-	availableWorkers := make([]*Worker, 0)
-	for _, worker := range c.workers {
-		if worker.Status == WorkerStatusIdle {
-			availableWorkers = append(availableWorkers, worker)
-		}
-	}
-
-	if len(availableWorkers) == 0 {
-		return "", fmt.Errorf("no available workers")
-	}
-
 	switch algorithm {
+	case "random":
+		// Randomly select one of the available algorithms
+		algos := []string{"round-robin", "fcfs", "least-loaded", "priority", "consistent-hash"}
+		randomAlgo := algos[rand.Intn(len(algos))]
+		c.logger.Info("Selected algorithm: ", randomAlgo)
+		return c.AssignTaskToWorker(task, randomAlgo, availableWorkers)
+
 	case "round-robin":
 		// Simple round robin - pick next worker in sequence
 		selectedWorkerID = availableWorkers[len(c.taskQueue)%len(availableWorkers)].ID
+		break
 
 	case "fcfs":
 		// First available worker gets the task
@@ -514,21 +537,21 @@ func (c *Coordinator) AssignTaskToWorker(task *types.Task, algorithm string) (st
 		}
 
 	default:
-		return "", fmt.Errorf("unknown scheduling algorithm: %s", algorithm)
+		return nil, fmt.Errorf("unknown scheduling algorithm: %s", algorithm)
 	}
+	fmt.Println("Selected worker: ", selectedWorkerID)
 
 	// Update worker status
 	worker := c.workers[selectedWorkerID]
-	worker.Status = WorkerStatusBusy
-	worker.CurrentTaskID = task.ID
-	worker.TaskCount++
+	return worker, nil
+	// worker.Status = WorkerStatusBusy
+	// worker.CurrentTaskID = task.ID
+	// worker.TaskCount++
 
-	// Update task
-	task.WorkerID = selectedWorkerID
-	task.Status = types.TaskStatusAssigned
-	task.AssignedAt = time.Now()
+	// // Update task
+	// task.WorkerID = selectedWorkerID
+	// task.Status = types.TaskStatusAssigned
+	// task.AssignedAt = time.Now()
 
-	metrics.TaskAssignmentLatency.WithLabelValues(selectedWorkerID).Observe(time.Since(task.CreatedAt).Seconds())
-
-	return selectedWorkerID, nil
+	// return selectedWorkerID, nil
 }

@@ -32,6 +32,7 @@ type Task struct {
 	Payload     []byte     `json:"payload,omitempty"`
 	AssignedAt  time.Time  `json:"assigned_at,omitempty"`
 	CompletedAt time.Time  `json:"completed_at,omitempty"`
+	WorkNumber  int        `json:"work_number,omitempty"`
 }
 
 type Worker struct {
@@ -44,6 +45,20 @@ type Worker struct {
 	mu         sync.RWMutex
 	LastPing   time.Time
 	FirstRun   time.Time
+}
+
+type TaskType string
+
+const (
+	TaskTypeMemory TaskType = "memory"
+	TaskTypeCPU    TaskType = "cpu"
+	TaskTypeIO     TaskType = "io"
+)
+
+type TaskSubmitRequest struct {
+	TaskType TaskType  `json:"task_type"`
+	Number   int       `json:"number,omitempty"`
+	CreateAt time.Time `json:"created_at,omitempty"`
 }
 
 type RegistrationRequest struct {

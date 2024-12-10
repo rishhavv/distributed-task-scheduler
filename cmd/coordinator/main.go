@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"net/http"
 	"os"
 
@@ -13,8 +14,10 @@ func main() {
 	logger := logrus.New()
 	logger.SetOutput(os.Stdout)
 	logger.SetLevel(logrus.InfoLevel)
+	algo := flag.String("algo", "random", "algo to use while assigning tasks")
+	flag.Parse()
 
-	coord := coordinator.NewCoordinator(logger)
+	coord := coordinator.NewCoordinator(logger, *algo)
 	server := coordinator.NewHttpServer(coord, logger)
 
 	r := mux.NewRouter()
