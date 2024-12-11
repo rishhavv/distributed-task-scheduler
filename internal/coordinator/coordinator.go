@@ -165,6 +165,7 @@ func (c *Coordinator) distributeTasksLoop() {
 }
 
 func (c *Coordinator) processPendingTasks() {
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -183,9 +184,9 @@ func (c *Coordinator) processPendingTasks() {
 	if len(availableWorkers) == 0 {
 		return
 	}
-
+	fmt.Println("Processed all pending tasks", len(c.taskQueue), len(availableWorkers))
 	// Simple round-robin task distribution
-	for i := 0; i < len(c.taskQueue); i++ {
+	for i := 0; i < len(availableWorkers) && len(c.taskQueue) > 0; i++ {
 		taskID := c.taskQueue[0]
 		task, exists := c.tasks[taskID]
 		if !exists {
@@ -426,6 +427,7 @@ func (c *Coordinator) GetNextTask(workerID string) (*types.Task, error) {
 
 	// Check if worker already has a task
 	// Return the same task if it is already assigned
+	fmt.Println("Checking worker: ", worker.CurrentTaskID)
 	if worker.CurrentTaskID != "" {
 		fmt.Println("Task already assigned, returning same task: ", worker.CurrentTaskID)
 		task := c.tasks[worker.CurrentTaskID]
@@ -437,30 +439,32 @@ func (c *Coordinator) GetNextTask(workerID string) (*types.Task, error) {
 	if len(c.taskQueue) == 0 {
 		return nil, nil // No tasks available
 	}
+	task := c.tasks[c.taskQueue[0]]
+	return &task, nil
 
 	// Pop next task from queue
-	taskID := c.taskQueue[0]
-	c.taskQueue = c.taskQueue[1:]
+	// taskID := c.taskQueue[0]
+	// c.taskQueue = c.taskQueue[1:]
 
-	task := c.tasks[taskID]
-	task.Status = types.TaskStatusAssigned
-	task.WorkerID = workerID
-	task.AssignedAt = time.Now()
+	// task := c.tasks[taskID]
+	// task.Status = types.TaskStatusAssigned
+	// task.WorkerID = workerID
+	// task.AssignedAt = time.Now()
 
-	// Update task in map
-	c.tasks[taskID] = task
+	// // Update task in map
+	// c.tasks[taskID] = task
 
-	// Update worker
-	worker.CurrentTaskID = taskID
-	worker.TaskCount++
-	c.workers[workerID] = worker
+	// // Update worker
+	// worker.CurrentTaskID = taskID
+	// worker.TaskCount++
+	// c.workers[workerID] = worker
 
-	c.logger.WithFields(logrus.Fields{
-		"task_id":   taskID,
-		"worker_id": workerID,
-	}).Info("types.Task assigned to worker")
+	// c.logger.WithFields(logrus.Fields{
+	// 	"task_id":   taskID,
+	// 	"worker_id": workerID,
+	// }).Info("types.Task assigned to worker")
 
-	return &task, nil
+	// return &task, nil
 }
 
 // AssignTaskToWorker assigns a task to a worker using the specified scheduling algorithm

@@ -22,7 +22,8 @@ func RunWorkload(taskType string, taskName string, value int) (int, error) {
 	case "io":
 		return RunIOTask(taskName, value)
 	case "memory":
-		return RunMemoryTask(taskName, value)
+		fmt.Println("Running memory task: ", taskName, value)
+		return RunTask(taskName, value)
 	default:
 		return 0, fmt.Errorf("unknown task type: %s", taskType)
 	}

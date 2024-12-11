@@ -62,7 +62,6 @@ func (s *HttpServer) handleGetNextTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if task == nil {
-		fmt.Println("No task available")
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -121,7 +120,6 @@ func (s *HttpServer) handleWorkerHeartbeat(w http.ResponseWriter, r *http.Reques
 
 	worker.LastHeartbeat = time.Now()
 	worker.Status = WorkerStatus(heartbeat.Status)
-	worker.TaskCount = heartbeat.TaskCount
 
 	for taskID, status := range heartbeat.Tasks {
 		if err := s.coordinator.UpdateTaskStatus(taskID, TaskStatus(status), nil); err != nil {
