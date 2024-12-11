@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"runtime"
 	"sync"
 	"time"
 
@@ -260,6 +261,12 @@ func (w *Worker) fetchAndProcessTask(ctx context.Context) error {
 	w.Status = types.WorkerStatusIdle
 	w.currentTaskID = ""
 	w.mu.Unlock()
+
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+
+	metrics.ResourceUtilization.WithLabelValues("memory", w.ID).Set(float64(m.Alloc) / float64(m.Sys))
+	metrics.ResourceUtilization.WithLabelValues("cpu", w.ID).Set(float64(runtime.NumGoroutine()))
 
 	return nil
 }

@@ -223,6 +223,21 @@ func (c *Coordinator) processPendingTasks() {
 		// Remove task from queue
 		c.taskQueue = c.taskQueue[1:]
 	}
+
+	totalWorkers := float64(len(availableWorkers))
+	for _, worker := range availableWorkers {
+		// Calculate load balance ratio
+		workerLoadRatio := float64(worker.TaskCount) / float64(c.getTotalTasks())
+		metrics.WorkerLoadBalance.WithLabelValues(worker.ID).Set(workerLoadRatio)
+		
+		// Calculate task distribution fairness
+		fairnessRatio := float64(worker.TaskCount) / totalWorkers
+		metrics.TaskDistributionFairness.WithLabelValues(worker.ID, "normal").Set(fairnessRatio)
+	}
+
+	// Add scalability metrics
+	queueGrowthRate := float64(len(c.taskQueue)) / float64(c.getTotalProcessedTasks()+1)
+	metrics.ScalabilityMetrics.WithLabelValues("queue_growth_rate").Set(queueGrowthRate)
 }
 
 func (c *Coordinator) selectWorker(workers []*Worker, task types.Task) *Worker {
@@ -558,4 +573,22 @@ func (c *Coordinator) AssignTaskToWorker(task types.Task, algorithm string, avai
 	// task.AssignedAt = time.Now()
 
 	// return selectedWorkerID, nil
+}
+
+func (c *Coordinator) getTotalTasks() int {
+	total := 0
+	for _, worker := range c.workers {
+		total += worker.TaskCount
+	}
+	return total
+}
+
+func (c *Coordinator) getTotalProcessedTasks() int {
+	total := 0
+	for _, task := range c.tasks {
+		if task.Status == types.TaskStatusCompleted {
+			total++
+		}
+	}
+	return total
 }
