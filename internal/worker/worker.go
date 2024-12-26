@@ -248,7 +248,7 @@ func (w *Worker) fetchAndProcessTask(ctx context.Context) error {
 	defer timer.ObserveDuration()
 	metrics.WorkerIdleTime.WithLabelValues(w.ID).Observe(time.Since(w.lastTaskCompletion).Seconds())
 	// TODO: Implement actual task processing logic here
-	_, err = tasks.RunWorkload(task.Type, task.Name, task.Value)
+	_, err = tasks.RunWorkload(task.Type, task.Name)
 	metrics.WorkerTasksProcessed.WithLabelValues(w.ID, task.Type).Inc()
 	w.lastTaskCompletion = time.Now()
 

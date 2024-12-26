@@ -229,7 +229,7 @@ func (c *Coordinator) processPendingTasks() {
 		// Calculate load balance ratio
 		workerLoadRatio := float64(worker.TaskCount) / float64(c.getTotalTasks())
 		metrics.WorkerLoadBalance.WithLabelValues(worker.ID).Set(workerLoadRatio)
-		
+
 		// Calculate task distribution fairness
 		fairnessRatio := float64(worker.TaskCount) / totalWorkers
 		metrics.TaskDistributionFairness.WithLabelValues(worker.ID, "normal").Set(fairnessRatio)
@@ -442,7 +442,6 @@ func (c *Coordinator) GetNextTask(workerID string) (*types.Task, error) {
 
 	// Check if worker already has a task
 	// Return the same task if it is already assigned
-	fmt.Println("Checking worker: ", worker.CurrentTaskID)
 	if worker.CurrentTaskID != "" {
 		fmt.Println("Task already assigned, returning same task: ", worker.CurrentTaskID)
 		task := c.tasks[worker.CurrentTaskID]

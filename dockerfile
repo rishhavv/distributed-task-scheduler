@@ -29,3 +29,5 @@ COPY --from=builder /app/metrics .
 
 # Expose ports
 EXPOSE 8080 2112
+
+CMD ["./coordinator"]   

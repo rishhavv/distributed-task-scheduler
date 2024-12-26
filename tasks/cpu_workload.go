@@ -139,26 +139,70 @@ func RunTask(taskName string, value int) (int, error) {
 // Task computation functions
 
 func ComputePrimes(n int) int {
-	// Sieve of Eratosthenes
-	sieve := make([]bool, n+1)
-	for i := 2; i <= n; i++ {
-		sieve[i] = true
+	// Segmented Sieve of Eratosthenes with wheel factorization
+	if n < 2 {
+		return 0
 	}
 
-	for i := 2; i*i <= n; i++ {
-		if sieve[i] {
-			for j := i * i; j <= n; j += i {
-				sieve[j] = false
+	// Use wheel factorization with first 3 primes (2,3,5)
+	wheel := []int{4, 2, 4, 2, 4, 6, 2, 6}
+	wheelSize := len(wheel)
+	
+	// Calculate segment size for better cache efficiency
+	segmentSize := 32768
+	
+	// Initialize first segment
+	segment := make([]bool, segmentSize)
+	primes := []int{2, 3, 5, 7}
+	
+	count := 4 // Count of first 4 primes
+	start := 11 // Start after wheel primes
+	
+	for low := start; low <= n; {
+		// Reset segment
+		for i := range segment {
+			segment[i] = true
+		}
+		
+		// Calculate segment bounds
+		high := low + segmentSize - 1
+		if high > n {
+			high = n
+		}
+		
+		// Sieve segment using known primes
+		for _, prime := range primes {
+			firstMultiple := (low + prime - 1) / prime * prime
+			if firstMultiple < low {
+				firstMultiple += prime
+			}
+			
+			for multiple := firstMultiple; multiple <= high; multiple += prime {
+				segment[multiple-low] = false
+			}
+		}
+		
+		// Find new primes in segment and use them for sieving
+		for i := 0; i < segmentSize && low+i <= high; i++ {
+			if segment[i] {
+				count++
+				if low+i <= int(math.Sqrt(float64(n))) {
+					primes = append(primes, low+i)
+				}
+			}
+		}
+		
+		// Move to next segment using wheel
+		wheelIndex := 0
+		for low <= n {
+			low += wheel[wheelIndex]
+			wheelIndex = (wheelIndex + 1) % wheelSize
+			if low+segmentSize > n {
+				break
 			}
 		}
 	}
-
-	count := 0
-	for i := 2; i <= n; i++ {
-		if sieve[i] {
-			count++
-		}
-	}
+	
 	return count
 }
 
