@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"sync"
@@ -74,6 +75,68 @@ func NewCoordinator(logger *logrus.Logger, algorithm string) *Coordinator {
 }
 
 // SubmitTask adds a new task to the system
+// TaskGeneratorConfig holds configuration for the task generator
+type TaskGeneratorConfig struct {
+	TargetTaskCount int           // Number of tasks to maintain in pipeline
+	TaskTypes       []string      // Types of tasks to generate
+	CheckInterval   time.Duration // How often to check task count
+	BatchSize       int           // How many tasks to generate at once when below target
+	MinValue        int           // Minimum value for task workload
+	MaxValue        int           // Maximum value for task workload
+	MinWorkNumber   int           // Minimum work number
+	MaxWorkNumber   int           // Maximum work number
+}
+
+// DefaultTaskGeneratorConfig returns sensible defaults
+func DefaultTaskGeneratorConfig() TaskGeneratorConfig {
+	return TaskGeneratorConfig{
+		TargetTaskCount: 1000,
+		TaskTypes:       []string{"cpu", "io", "memory", "balanced"},
+		CheckInterval:   5 * time.Second,
+		BatchSize:       100,
+		MinValue:        100,
+		MaxValue:        1000,
+		MinWorkNumber:   1,
+		MaxWorkNumber:   10,
+	}
+}
+
+func (c *Coordinator) StartTaskGenerator(ctx context.Context, config *TaskGeneratorConfig) {
+	// Use default config if none provided
+	if config == nil {
+		defaultConfig := DefaultTaskGeneratorConfig()
+		config = &defaultConfig
+	}
+
+	ticker := time.NewTicker(config.CheckInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			c.mu.RLock()
+			currentTaskCount := len(c.taskQueue)
+			c.mu.RUnlock()
+
+			if currentTaskCount < config.TargetTaskCount {
+				tasksNeeded := config.TargetTaskCount - currentTaskCount
+				batchSize := min(tasksNeeded, config.BatchSize)
+
+				taskReq := types.TaskSubmitRequest{
+					Number:   batchSize,
+					TaskType: types.TaskType(config.TaskTypes[rand.Intn(len(config.TaskTypes))]),
+				}
+
+				if err := c.SubmitTask(taskReq); err != nil {
+					c.logger.WithError(err).Error("Failed to generate tasks")
+				}
+			}
+		}
+	}
+}
+
 func (c *Coordinator) SubmitTask(taskReq types.TaskSubmitRequest) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

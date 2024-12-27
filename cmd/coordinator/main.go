@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"net/http"
 	"os"
@@ -15,9 +16,15 @@ func main() {
 	logger.SetOutput(os.Stdout)
 	logger.SetLevel(logrus.InfoLevel)
 	algo := flag.String("algo", "random", "algo to use while assigning tasks")
+	workload := flag.Bool("workload", false, "Enable sustained workload generation")
 	flag.Parse()
 
 	coord := coordinator.NewCoordinator(logger, *algo)
+
+	if *workload {
+		go coord.StartTaskGenerator(context.Background(), nil)
+	}
+
 	server := coordinator.NewHttpServer(coord, logger)
 
 	r := mux.NewRouter()
