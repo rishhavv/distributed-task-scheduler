@@ -11,7 +11,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rishhavv/dts/internal/metrics"
 	"github.com/rishhavv/dts/internal/types"
 	"github.com/rishhavv/dts/tasks"
@@ -43,6 +45,22 @@ type WorkerConfig struct {
 	Capabilities []string
 	ServerURL    string
 	Logger       *logrus.Logger
+}
+
+type MetricsServer struct {
+	worker *Worker
+	logger *logrus.Logger
+}
+
+func NewMetricsServer(worker *Worker, logger *logrus.Logger) *MetricsServer {
+	return &MetricsServer{
+		worker: worker,
+		logger: logger,
+	}
+}
+
+func (s *MetricsServer) RegisterRoutes(r *mux.Router) {
+	r.Handle("/metrics", promhttp.Handler())
 }
 
 func NewWorker(cfg WorkerConfig) *Worker {
@@ -162,9 +180,7 @@ func (w *Worker) sendHeartbeat(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to send heartbeat: %w", err)
 	}
-	if err == nil {
-		metrics.WorkerHeartbeatLatency.WithLabelValues(w.ID).Set(time.Since(startTime).Seconds())
-	}
+	metrics.WorkerHeartbeatLatency.WithLabelValues(w.ID).Set(time.Since(startTime).Seconds())
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("heartbeat failed with status: %d", resp.StatusCode)
@@ -248,11 +264,11 @@ func (w *Worker) fetchAndProcessTask(ctx context.Context) error {
 	defer timer.ObserveDuration()
 	metrics.WorkerIdleTime.WithLabelValues(w.ID).Observe(time.Since(w.lastTaskCompletion).Seconds())
 	// TODO: Implement actual task processing logic here
-	_, err = tasks.RunWorkload(task.Type, task.Name)
+	_, err = tasks.RunWorkload(task.Type, w.ID, "")
 	metrics.WorkerTasksProcessed.WithLabelValues(w.ID, task.Type).Inc()
 	w.lastTaskCompletion = time.Now()
 
-	// Update final task status
+	// Update final task statusŒ
 	if err := w.updateTaskStatus(ctx, task.ID, types.TaskStatusCompleted, nil); err != nil {
 		w.logger.WithError(err).Error("Failed to update task status to complete")
 	}

@@ -3,6 +3,7 @@ package tasks
 import (
 	"fmt"
 	"io"
+	"log"
 	"math/rand"
 	"net/http"
 	"os"
@@ -26,7 +27,7 @@ func IOBoundTasks() []struct {
 	}{
 		{
 			ID:          "large-file-read",
-			Name:        "fileread", 
+			Name:        "fileread",
 			Value:       1000000000,
 			Description: "Read 1GB file from disk sequentially",
 			IOTime:      10,
@@ -34,7 +35,7 @@ func IOBoundTasks() []struct {
 		{
 			ID:          "large-file-write",
 			Name:        "filewrite",
-			Value:       1000000000, 
+			Value:       1000000000,
 			Description: "Write 1GB file to disk sequentially",
 			IOTime:      12,
 		},
@@ -53,7 +54,7 @@ func IOBoundTasks() []struct {
 			IOTime:      20,
 		},
 		{
-			ID:          "network-upload", 
+			ID:          "network-upload",
 			Name:        "upload",
 			Value:       200000000,
 			Description: "Upload 200MB file to remote server",
@@ -68,7 +69,7 @@ func IOBoundTasks() []struct {
 		},
 		{
 			ID:          "db-writes",
-			Name:        "dbwrites", 
+			Name:        "dbwrites",
 			Value:       20000,
 			Description: "Perform 20K database write operations",
 			IOTime:      10,
@@ -79,13 +80,6 @@ func IOBoundTasks() []struct {
 			Value:       1000,
 			Description: "Make 1000 HTTP API calls to external service",
 			IOTime:      25,
-		},
-		{
-			ID:          "file-copy",
-			Name:        "filecopy",
-			Value:       500000000,
-			Description: "Copy 500MB file between disk locations",
-			IOTime:      15,
 		},
 		{
 			ID:          "log-processing",
@@ -109,6 +103,8 @@ func RunIOTask(taskName string, value int) (int, error) {
 			value = tasks[randomIndex].Value
 		}
 	}
+
+	log.Println("Running task: ", taskName, "with value: ", value)
 
 	switch taskName {
 	case "fileread":
@@ -269,7 +265,7 @@ func SimulateFileCopy(size int) int {
 	defer os.Remove(src.Name())
 	defer src.Close()
 
-	dst, err := os.CreateTemp("", "dst") 
+	dst, err := os.CreateTemp("", "dst")
 	if err != nil {
 		return 0
 	}

@@ -5,11 +5,13 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 
+	"github.com/gorilla/mux"
 	"github.com/rishhavv/dts/internal/worker"
 	"github.com/sirupsen/logrus"
 )
@@ -50,6 +52,21 @@ func main() {
 				log.Printf("Failed to start worker: %v", err)
 			}
 		}(workers[i])
+	}
+
+	// Start metrics servers for each worker
+	for i, w := range workers {
+		metricsServer := worker.NewMetricsServer(w, logger)
+		r := mux.NewRouter()
+		metricsServer.RegisterRoutes(r)
+
+		port := 9200 + i
+		go func(port int) {
+			logger.Infof("Starting metrics server on :%d", port)
+			if err := http.ListenAndServe(fmt.Sprintf(":%d", port), r); err != nil {
+				logger.Error(err)
+			}
+		}(port)
 	}
 
 	// Handle graceful shutdown

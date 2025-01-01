@@ -24,7 +24,7 @@ func main() {
 	if *workload {
 		go coord.StartTaskGenerator(context.Background(), nil)
 	}
-
+	
 	server := coordinator.NewHttpServer(coord, logger)
 
 	r := mux.NewRouter()

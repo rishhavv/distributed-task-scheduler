@@ -4,4 +4,19 @@ global:
 scrape_configs:
   - job_name: 'dts_metrics'
     static_configs:
-      - targets: ['localhost:2112']
+      - targets: ['localhost:8080']
+  - job_name: 'dts_metrics_worker1'
+    static_configs:
+      - targets: ['localhost:9200']
+  - job_name: 'dts_metrics_worker2'
+    static_configs:
+      - targets: ['localhost:9201']
+  - job_name: 'dts_metrics_worker3'
+    static_configs:
+      - targets: ['localhost:9202']
+  - job_name: 'dts_metrics_worker4'
+    static_configs:
+      - targets: ['localhost:9203']
+  - job_name: 'vm_coordinator'
+    static_configs:
+      - targets: ['137.135.65.69:8080']

@@ -127,4 +127,31 @@ var (
 		Help:    "Time taken to assign a task to a worker",
 		Buckets: prometheus.ExponentialBuckets(0.1, 2.0, 10),
 	}, []string{"worker_id"})
+
+	// Task Progress Metrics
+	TasksRemaining = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "tasks_remaining_total",
+		Help: "Number of tasks yet to be processed",
+	}, []string{"task_type"})
+
+	TasksCompleted = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "tasks_completed_total",
+		Help: "Total number of completed tasks",
+	}, []string{"task_type"})
+
+	TaskTurnaroundTime = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "task_turnaround_time_seconds",
+		Help:    "Average time from task creation to completion",
+		Buckets: prometheus.ExponentialBuckets(0.1, 2.0, 10),
+	}, []string{"task_type"})
+
+	SchedulingAlgorithm = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "scheduling_algorithm_active",
+		Help: "Currently active scheduling algorithm (1 indicates active)",
+	}, []string{"algorithm"})
+
+	TaskCompletionRatio = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "task_completion_ratio",
+		Help: "Ratio of tasks being completed vs tasks incoming (>1 means completing faster than receiving)",
+	})
 )

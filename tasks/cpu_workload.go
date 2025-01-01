@@ -3,6 +3,7 @@ package tasks
 import (
 	"crypto/sha256"
 	"fmt"
+	"log"
 	"math"
 	"math/cmplx"
 	"math/rand"
@@ -110,6 +111,7 @@ func RunTask(taskName string, value int) (int, error) {
 		}
 	}
 
+	log.Println("Running task: ", taskName, "with value: ", value)
 	switch taskName {
 	case "primes":
 		return ComputePrimes(value), nil
@@ -130,7 +132,8 @@ func RunTask(taskName string, value int) (int, error) {
 	case "neural":
 		return NeuralSimulation(value), nil
 	case "fibonacci":
-		return Fibonacci(value), nil
+		// 100x easier
+		return Fibonacci(value / 100), nil
 	default:
 		return 0, fmt.Errorf("unknown task: %s", taskName)
 	}
@@ -147,41 +150,41 @@ func ComputePrimes(n int) int {
 	// Use wheel factorization with first 3 primes (2,3,5)
 	wheel := []int{4, 2, 4, 2, 4, 6, 2, 6}
 	wheelSize := len(wheel)
-	
+
 	// Calculate segment size for better cache efficiency
 	segmentSize := 32768
-	
+
 	// Initialize first segment
 	segment := make([]bool, segmentSize)
 	primes := []int{2, 3, 5, 7}
-	
-	count := 4 // Count of first 4 primes
+
+	count := 4  // Count of first 4 primes
 	start := 11 // Start after wheel primes
-	
+
 	for low := start; low <= n; {
 		// Reset segment
 		for i := range segment {
 			segment[i] = true
 		}
-		
+
 		// Calculate segment bounds
 		high := low + segmentSize - 1
 		if high > n {
 			high = n
 		}
-		
+
 		// Sieve segment using known primes
 		for _, prime := range primes {
 			firstMultiple := (low + prime - 1) / prime * prime
 			if firstMultiple < low {
 				firstMultiple += prime
 			}
-			
+
 			for multiple := firstMultiple; multiple <= high; multiple += prime {
 				segment[multiple-low] = false
 			}
 		}
-		
+
 		// Find new primes in segment and use them for sieving
 		for i := 0; i < segmentSize && low+i <= high; i++ {
 			if segment[i] {
@@ -191,7 +194,7 @@ func ComputePrimes(n int) int {
 				}
 			}
 		}
-		
+
 		// Move to next segment using wheel
 		wheelIndex := 0
 		for low <= n {
@@ -202,7 +205,7 @@ func ComputePrimes(n int) int {
 			}
 		}
 	}
-	
+
 	return count
 }
 

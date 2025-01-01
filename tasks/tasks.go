@@ -1,7 +1,7 @@
 package tasks
 
 import (
-	"fmt"
+	"log"
 	"math"
 	"math/rand"
 	"time"
@@ -9,7 +9,7 @@ import (
 
 // RunWorkload executes a task with specified characteristics for workload testing
 // If parameters are not specified, random values are selected based on common testing patterns
-func RunWorkload(taskType string, taskName string, value ...interface{}) (int, error) {
+func RunWorkload(taskType string, workerID string, taskName string, value ...interface{}) (int, error) {
 	// If no task type specified, randomly pick one with varied resource profiles
 	if taskType == "" {
 		types := []string{"cpu", "io", "memory", "cpu-io", "cpu-memory", "io-memory", "balanced"}
@@ -58,13 +58,13 @@ func RunWorkload(taskType string, taskName string, value ...interface{}) (int, e
 	if taskValue == 0 {
 		switch duration {
 		case "smoke":
-			taskValue = rand.Intn(1000) + 100
+			taskValue = rand.Intn(2000) + 1
 		case "short":
-			taskValue = rand.Intn(10000) + 1000
+			taskValue = rand.Intn(2000) + 1
 		case "medium":
-			taskValue = rand.Intn(100000) + 10000
+			taskValue = rand.Intn(2000) + 1
 		case "long", "soak":
-			taskValue = rand.Intn(1000000) + 100000
+			taskValue = rand.Intn(2000) + 1
 		}
 	}
 
@@ -72,45 +72,49 @@ func RunWorkload(taskType string, taskName string, value ...interface{}) (int, e
 	switch pattern {
 	case "bursty":
 		if rand.Float32() < 0.7 { // 70% chance of burst
-			taskValue = taskValue * 3
+			taskValue = min(taskValue+1000, taskValue*3)
 		}
 	case "ramp-up":
 		factor := float64(time.Now().Unix()%3600) / 3600.0
-		taskValue = int(float64(taskValue) * factor)
+		increase := min(1000, int(float64(taskValue)*factor))
+		taskValue = taskValue + increase
 	case "ramp-down":
 		factor := 1 - (float64(time.Now().Unix()%3600) / 3600.0)
-		taskValue = int(float64(taskValue) * factor)
+		increase := min(1000, int(float64(taskValue)*factor))
+		taskValue = taskValue + increase
 	case "sinusoidal":
 		factor := 0.5 + 0.5*math.Sin(float64(time.Now().Unix()%3600)/3600.0*2*math.Pi)
-		taskValue = int(float64(taskValue) * factor)
+		increase := min(1000, int(float64(taskValue)*factor))
+		taskValue = taskValue + increase
 	}
+	log.Printf("Worker %s running task %s with value %d", workerID, taskType, taskValue)
 
 	// Route to appropriate task runner based on type
 	switch taskType {
 	case "cpu":
-		return RunTask(taskName, taskValue)
+		return RunTask("", taskValue)
 	case "io":
-		return RunIOTask(taskName, taskValue)
+		return RunIOTask("", taskValue/100) // 100x easier
 	case "memory":
 		return RunMemoryTask(taskName, taskValue)
 	case "cpu-io":
 		cpuResult, _ := RunTask(taskName, taskValue/2)
-		ioResult, err := RunIOTask(taskName, taskValue/2)
+		ioResult, err := RunIOTask(taskName, taskValue/200) // 100x easier
 		return cpuResult + ioResult, err
 	case "cpu-memory":
 		cpuResult, _ := RunTask(taskName, taskValue/2)
 		memResult, err := RunMemoryTask(taskName, taskValue/2)
 		return cpuResult + memResult, err
 	case "io-memory":
-		ioResult, _ := RunIOTask(taskName, taskValue/2)
+		ioResult, _ := RunIOTask(taskName, taskValue/200) // 100x easier
 		memResult, err := RunMemoryTask(taskName, taskValue/2)
 		return ioResult + memResult, err
 	case "balanced":
 		cpuResult, _ := RunTask(taskName, taskValue/3)
-		ioResult, _ := RunIOTask(taskName, taskValue/3)
+		ioResult, _ := RunIOTask(taskName, taskValue/300) // 100x easier
 		memResult, err := RunMemoryTask(taskName, taskValue/3)
 		return cpuResult + ioResult + memResult, err
 	default:
-		return 0, fmt.Errorf("unknown task type: %s", taskType)
+		return RunTask("", taskValue)
 	}
 }

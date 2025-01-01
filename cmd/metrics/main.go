@@ -14,30 +14,149 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
 	"github.com/sirupsen/logrus"
+	"google.golang.org/protobuf/proto"
 )
 
 func metricsHandler(w http.ResponseWriter, r *http.Request) {
-	// Basic HTML header with some simple styling
+	// Modern HTML template with enhanced styling
 	fmt.Fprintf(w, `
 		<html>
 		<head>
-			<title>DTS Metrics</title>
+			<title>DTS Metrics Dashboard</title>
+			<meta name="viewport" content="width=device-width, initial-scale=1.0">
+			<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 			<style>
-				body { font-family: sans-serif; margin: 40px; }
-				.metric { margin-bottom: 20px; }
-				.metric-name { font-weight: bold; color: #2c3e50; }
-				.metric-value { margin-left: 20px; color: #34495e; }
-				.metric-type { color: #7f8c8d; font-size: 0.9em; }
+				:root {
+					--primary-color: #2563eb;
+					--secondary-color: #1e40af;
+					--text-primary: #1f2937;
+					--text-secondary: #4b5563;
+					--bg-primary: #ffffff;
+					--bg-secondary: #f3f4f6;
+					--border-color: #e5e7eb;
+				}
+
+				* {
+					margin: 0;
+					padding: 0;
+					box-sizing: border-box;
+				}
+
+				body {
+					font-family: 'Inter', sans-serif;
+					line-height: 1.5;
+					color: var(--text-primary);
+					background-color: var(--bg-secondary);
+					padding: 2rem;
+				}
+
+				.container {
+					max-width: 1200px;
+					margin: 0 auto;
+				}
+
+				.header {
+					background-color: var(--bg-primary);
+					padding: 1.5rem 2rem;
+					border-radius: 8px;
+					box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+					margin-bottom: 2rem;
+				}
+
+				h1 {
+					color: var(--primary-color);
+					font-size: 1.875rem;
+					font-weight: 600;
+				}
+
+				.metrics-grid {
+					display: grid;
+					grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+					gap: 1.5rem;
+				}
+
+				.metric {
+					background-color: var(--bg-primary);
+					padding: 1.5rem;
+					border-radius: 8px;
+					box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+					transition: transform 0.2s ease;
+				}
+
+				.metric:hover {
+					transform: translateY(-2px);
+				}
+
+				.metric-name {
+					font-size: 1.125rem;
+					font-weight: 600;
+					color: var(--primary-color);
+					margin-bottom: 0.5rem;
+					border-bottom: 2px solid var(--border-color);
+					padding-bottom: 0.5rem;
+				}
+
+				.metric-type {
+					display: inline-block;
+					font-size: 0.875rem;
+					color: var(--text-secondary);
+					background-color: var(--bg-secondary);
+					padding: 0.25rem 0.75rem;
+					border-radius: 9999px;
+					margin-bottom: 0.75rem;
+				}
+
+				.metric-help {
+					color: var(--text-secondary);
+					font-size: 0.875rem;
+					margin-bottom: 1rem;
+				}
+
+				.metric-value {
+					background-color: var(--bg-secondary);
+					padding: 0.75rem;
+					border-radius: 6px;
+					margin-bottom: 0.5rem;
+					font-family: monospace;
+					font-size: 0.875rem;
+				}
+
+				.metric-labels {
+					color: var(--secondary-color);
+					font-weight: 500;
+				}
+
+				.error-message {
+					background-color: #fee2e2;
+					color: #dc2626;
+					padding: 1rem;
+					border-radius: 6px;
+					margin-bottom: 1rem;
+				}
+
+				@media (max-width: 768px) {
+					body {
+						padding: 1rem;
+					}
+					
+					.metrics-grid {
+						grid-template-columns: 1fr;
+					}
+				}
 			</style>
 		</head>
 		<body>
-			<h1>DTS Metrics Dashboard</h1>
+			<div class="container">
+				<div class="header">
+					<h1>DTS Metrics Dashboard</h1>
+				</div>
+				<div class="metrics-grid">
 	`)
 
 	// Fetch metrics from the /metrics endpoint
 	resp, err := http.Get("http://localhost:2112/metrics")
 	if err != nil {
-		fmt.Fprintf(w, "<p>Error fetching metrics: %v</p>", err)
+		fmt.Fprintf(w, `<div class="error-message">Error fetching metrics: %v</div>`, err)
 		return
 	}
 	defer resp.Body.Close()
@@ -46,7 +165,7 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 	var parser expfmt.TextParser
 	metrics, err := parser.TextToMetricFamilies(resp.Body)
 	if err != nil {
-		fmt.Fprintf(w, "<p>Error parsing metrics: %v</p>", err)
+		fmt.Fprintf(w, `<div class="error-message">Error parsing metrics: %v</div>`, err)
 		return
 	}
 
@@ -54,13 +173,15 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 	for name, mf := range metrics {
 		fmt.Fprintf(w, `<div class="metric">`)
 		fmt.Fprintf(w, `<div class="metric-name">%s</div>`, name)
-		fmt.Fprintf(w, `<div class="metric-type">Type: %s</div>`, mf.GetType().String())
+		fmt.Fprintf(w, `<div class="metric-type">%s</div>`, mf.GetType().String())
+		fmt.Fprintf(w, `<div class="metric-help">%s</div>`, mf.GetHelp())
 
 		for _, m := range mf.GetMetric() {
 			fmt.Fprintf(w, `<div class="metric-value">`)
 
 			// Display labels if present
 			if len(m.GetLabel()) > 0 {
+				fmt.Fprintf(w, `<span class="metric-labels">`)
 				fmt.Fprintf(w, "{")
 				for i, label := range m.GetLabel() {
 					if i > 0 {
@@ -68,7 +189,7 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 					}
 					fmt.Fprintf(w, "%s=%s", label.GetName(), label.GetValue())
 				}
-				fmt.Fprintf(w, "} ")
+				fmt.Fprintf(w, "}</span><br>")
 			}
 
 			// Display value based on metric type
@@ -78,7 +199,9 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 			case dto.MetricType_GAUGE:
 				fmt.Fprintf(w, "Value: %.2f", m.GetGauge().GetValue())
 			case dto.MetricType_HISTOGRAM:
-				fmt.Fprintf(w, "Count: %d, Sum: %.2f", m.GetHistogram().GetSampleCount(), m.GetHistogram().GetSampleSum())
+				fmt.Fprintf(w, "Count: %d<br>Sum: %.2f",
+					m.GetHistogram().GetSampleCount(),
+					m.GetHistogram().GetSampleSum())
 			}
 
 			fmt.Fprintf(w, "</div>")
@@ -86,7 +209,12 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "</div>")
 	}
 
-	fmt.Fprintf(w, "</body></html>")
+	fmt.Fprintf(w, `
+				</div>
+			</div>
+		</body>
+		</html>
+	`)
 }
 
 type MetricsCollector struct {
@@ -210,6 +338,35 @@ func (mc *MetricsCollector) updateHistogram(mf *dto.MetricFamily) {
 	}
 }
 
+var DISCARD_METRICS = map[string]struct{}{
+	"go_sched_gomaxprocs_threads":                {},
+	"go_memstats_gc_sys_bytes":                   {},
+	"go_gc_gogc_percent":                         {},
+	"go_memstats_heap_idle_bytes":                {},
+	"go_memstats_heap_released_bytes":            {},
+	"go_memstats_stack_inuse_bytes":              {},
+	"go_memstats_stack_sys_bytes":                {},
+	"go_memstats_buck_hash_sys_bytes":            {},
+	"go_memstats_mcache_inuse_bytes":             {},
+	"go_memstats_mcache_sys_bytes":               {},
+	"go_memstats_mspan_inuse_bytes":              {},
+	"go_memstats_mspan_sys_bytes":                {},
+	"go_memstats_other_sys_bytes":                {},
+	"go_memstats_alloc_bytes":                    {},
+	"go_memstats_alloc_bytes_total":              {},
+	"go_memstats_sys_bytes":                      {},
+	"go_gc_gomemlimit_bytes":                     {},
+	"promhttp_metric_handler_requests_total":     {},
+	"promhttp_metric_handler_requests_in_flight": {},
+	"scalability_metrics":                        {},
+	"go_memstats_heap_objects":                   {},
+	"go_memstats_next_gc_bytes":                  {},
+	"go_memstats_gc_cpu_fraction":                {},
+	"go_memstats_heap_sys_bytes":                 {},
+	"go_memstats_heap_inuse_bytes":               {},
+	"go_memstats_last_gc_time_seconds":           {},
+}
+
 func main() {
 	logger := logrus.New()
 	logger.SetOutput(os.Stdout)
@@ -221,27 +378,60 @@ func main() {
 
 	// Periodically fetch and update metrics
 	go func() {
-		ticker := time.NewTicker(5 * time.Second)
+		ticker := time.NewTicker(2 * time.Second)
 		for range ticker.C {
 			// Scrape coordinator metrics
 			coordMetrics, err := collector.scrapeEndpoint("http://localhost:8080/metrics")
+			filteredCoordinatorMetrics := make([]*dto.MetricFamily, 0)
 			if err != nil {
 				logger.Error(err)
 			} else {
-				collector.updateRegistry(coordMetrics)
+				// Filter out metrics that should be discarded
+				for _, mf := range coordMetrics {
+					shouldDiscard := false
+					_, shouldDiscard = DISCARD_METRICS[mf.GetName()]
+					if !shouldDiscard {
+						filteredCoordinatorMetrics = append(filteredCoordinatorMetrics, mf)
+					}
+				}
+				collector.updateRegistry(filteredCoordinatorMetrics)
 				logger.Info("Updated coordinator metrics")
 			}
 
 			// Scrape worker metrics (assuming workers are on ports 8081, 8082, etc.)
-			// workerPorts := []string{"8081", "8082"} // Add more ports as needed
-			// for _, port := range workerPorts {
-			// 	workerMetrics, err := collector.scrapeEndpoint(fmt.Sprintf("http://localhost:%s/metrics", port))
-			// 	if err != nil {
-			// 		logger.Error(err)
-			// 		continue
-			// 	}
-			// 	collector.updateRegistry(workerMetrics)
-			// }
+			workerPorts := []string{"9200", "9201", "9202", "9203"} // Add more ports as needed
+			workerMetricsCombined := make([]*dto.MetricFamily, 0)
+			for i, port := range workerPorts {
+				workerID := fmt.Sprintf("worker-%d", i+1)
+				workerMetrics, err := collector.scrapeEndpoint(fmt.Sprintf("http://localhost:%s/metrics", port))
+				if err != nil {
+					logger.WithField("workerID", workerID).Error(err)
+					continue
+				} else {
+					// Filter out metrics that should be discarded
+					filteredWorkerMetrics := make([]*dto.MetricFamily, 0)
+					for _, mf := range workerMetrics {
+						shouldDiscard := false
+						_, shouldDiscard = DISCARD_METRICS[mf.GetName()]
+						if !shouldDiscard {
+							// Add worker ID label to each metric
+							for _, m := range mf.Metric {
+								m.Label = append(m.Label, &dto.LabelPair{
+									Name:  proto.String("worker_id"),
+									Value: proto.String(workerID),
+								})
+							}
+							filteredWorkerMetrics = append(filteredWorkerMetrics, mf)
+						}
+						workerMetricsCombined = append(workerMetricsCombined, filteredWorkerMetrics...)
+					}
+					// Combine coordinator and worker metrics
+					logger.WithField("workerID", workerID).Info("Updated worker metrics")
+				}
+
+			}
+			combinedFilteredMetrics := append(workerMetricsCombined, filteredCoordinatorMetrics...)
+			collector.updateRegistry(combinedFilteredMetrics)
 		}
 	}()
 

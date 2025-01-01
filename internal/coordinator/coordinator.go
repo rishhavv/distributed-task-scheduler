@@ -3,6 +3,8 @@ package coordinator
 import (
 	"context"
 	"fmt"
+	"log"
+	"math"
 	"math/rand"
 	"sync"
 	"time"
@@ -60,7 +62,7 @@ func NewCoordinator(logger *logrus.Logger, algorithm string) *Coordinator {
 		workers:    make(map[string]*Worker),
 		taskQueue:  make([]string, 0),
 		logger:     logger,
-		taskCh:     make(chan types.Task, 10000),
+		taskCh:     make(chan types.Task, 100000),
 		workerCh:   make(chan *Worker, 100),
 		shutdownCh: make(chan struct{}),
 		algorithm:  algorithm,
@@ -90,12 +92,12 @@ type TaskGeneratorConfig struct {
 // DefaultTaskGeneratorConfig returns sensible defaults
 func DefaultTaskGeneratorConfig() TaskGeneratorConfig {
 	return TaskGeneratorConfig{
-		TargetTaskCount: 1000,
+		TargetTaskCount: 10000,
 		TaskTypes:       []string{"cpu", "io", "memory", "balanced"},
 		CheckInterval:   5 * time.Second,
 		BatchSize:       100,
-		MinValue:        100,
-		MaxValue:        1000,
+		MinValue:        1000,
+		MaxValue:        100000000,
 		MinWorkNumber:   1,
 		MaxWorkNumber:   10,
 	}
@@ -111,18 +113,52 @@ func (c *Coordinator) StartTaskGenerator(ctx context.Context, config *TaskGenera
 	ticker := time.NewTicker(config.CheckInterval)
 	defer ticker.Stop()
 
+	patterns := []string{"bursty", "ramp-up", "ramp-down", "sinusoidal"}
+	currentPattern := 0
+	patternStart := time.Now()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// Change pattern every 2 minutes
+			if time.Since(patternStart) > 2*time.Minute {
+				currentPattern = (currentPattern + 1) % len(patterns)
+				patternStart = time.Now()
+			}
+
 			c.mu.RLock()
-			currentTaskCount := len(c.taskQueue)
+			currentTaskCount := len(c.taskCh)
 			c.mu.RUnlock()
 
 			if currentTaskCount < config.TargetTaskCount {
 				tasksNeeded := config.TargetTaskCount - currentTaskCount
 				batchSize := min(tasksNeeded, config.BatchSize)
+
+				// Apply pattern modifications
+				pattern := patterns[currentPattern]
+				log.Println("\n Current pattern: ", pattern)
+				switch pattern {
+				case "bursty":
+					if rand.Float32() < 0.7 { // 70% chance of burst
+						batchSize = batchSize * 3
+					}
+				case "ramp-up":
+					factor := float64(time.Now().Unix()%3600) / 3600.0
+					batchSize = int(float64(batchSize) * factor)
+				case "ramp-down":
+					factor := 1 - (float64(time.Now().Unix()%3600) / 3600.0)
+					batchSize = int(float64(batchSize) * factor)
+				case "sinusoidal":
+					factor := 0.5 + 0.5*math.Sin(float64(time.Now().Unix()%3600)/3600.0*2*math.Pi)
+					batchSize = int(float64(batchSize) * factor)
+				}
+
+				// Ensure batchSize is at least 1
+				if batchSize < 1 {
+					batchSize = 1
+				}
 
 				taskReq := types.TaskSubmitRequest{
 					Number:   batchSize,
@@ -157,6 +193,7 @@ func (c *Coordinator) SubmitTask(taskReq types.TaskSubmitRequest) error {
 			CreatedAt:  time.Now(),
 			Value:      rand.Intn(1000), // Random value for task
 			WorkNumber: workNumber,
+			Type:       string(taskReq.TaskType),
 		}
 
 		if _, exists := c.tasks[taskID]; exists {
@@ -245,6 +282,7 @@ func (c *Coordinator) processPendingTasks() {
 	}
 
 	if len(availableWorkers) == 0 {
+		log.Println("No available workers to assign tasks")
 		return
 	}
 	fmt.Println("Processed all pending tasks", len(c.taskQueue), len(availableWorkers))
@@ -281,20 +319,50 @@ func (c *Coordinator) processPendingTasks() {
 		task.Status = types.TaskStatusAssigned
 		task.AssignedAt = time.Now()
 		c.tasks[task.ID] = task
-		metrics.TaskAssignmentLatency.WithLabelValues(worker.ID).Observe(time.Since(task.CreatedAt).Seconds())
+		// Record task scheduling latency from task creation to assignment
+		schedulingLatency := time.Since(task.CreatedAt).Seconds()
+		metrics.TaskSchedulingLatency.Observe(schedulingLatency)
+		// Calculate average latency for this worker
+		avgLatency := float64(time.Since(task.CreatedAt).Seconds()) / float64(worker.TaskCount)
+		metrics.TaskAssignmentLatency.WithLabelValues(worker.ID).Observe(avgLatency)
 
 		// Remove task from queue
 		c.taskQueue = c.taskQueue[1:]
 	}
 
-	totalWorkers := float64(len(availableWorkers))
-	for _, worker := range availableWorkers {
-		// Calculate load balance ratio
-		workerLoadRatio := float64(worker.TaskCount) / float64(c.getTotalTasks())
-		metrics.WorkerLoadBalance.WithLabelValues(worker.ID).Set(workerLoadRatio)
+	// Calculate fairness ratio using max-min difference normalized by mean
+	var taskCounts []float64
+	maxTasks := 0.0
+	minTasks := float64(^uint(0) >> 1) // Max float64
+	totalTasks := 0.0
 
-		// Calculate task distribution fairness
-		fairnessRatio := float64(worker.TaskCount) / totalWorkers
+	// First pass - collect task counts and find max/min
+	for _, worker := range availableWorkers {
+		count := float64(worker.TaskCount)
+		taskCounts = append(taskCounts, count)
+		totalTasks += count
+		if count > maxTasks {
+			maxTasks = count
+		}
+		if count < minTasks {
+			minTasks = count
+		}
+	}
+
+	// Calculate mean tasks per worker
+	meanTasks := totalTasks / float64(len(availableWorkers))
+
+	// Calculate fairness ratio: 1 - (max-min)/mean
+	var fairnessRatio float64
+	if meanTasks > 0 {
+		fairnessRatio = 1.0 - ((maxTasks - minTasks) / meanTasks)
+	} else {
+		fairnessRatio = 1.0 // Perfect fairness when no tasks assigned
+	}
+
+	// Set metrics for each worker
+	for _, worker := range availableWorkers {
+		metrics.WorkerLoadBalance.WithLabelValues(worker.ID).Set(float64(worker.TaskCount) / meanTasks)
 		metrics.TaskDistributionFairness.WithLabelValues(worker.ID, "normal").Set(fairnessRatio)
 	}
 
@@ -363,7 +431,21 @@ func (c *Coordinator) UpdateTaskStatus(taskID string, status TaskStatus, err err
 
 	if status == TaskStatusComplete {
 		completionTime := time.Since(c.tasks[taskID].CreatedAt)
-		metrics.TaskCompletionTime.WithLabelValues(c.tasks[taskID].Type).Observe(completionTime.Seconds())
+		fmt.Println("Completion time: ", completionTime.Seconds(), "Task ID: ", taskID, "Task Type: ", c.tasks[taskID].Type)
+		metrics.TaskCompletionTime.WithLabelValues(string(c.tasks[taskID].Type)).Observe(completionTime.Seconds())
+
+		// Calculate completion ratio based on coordinator's internal state instead
+		totalTasks := len(c.tasks)
+		completedTasks := 0
+		for _, t := range c.tasks {
+			if t.Status == types.TaskStatusCompleted {
+				completedTasks++
+			}
+		}
+
+		if totalTasks > 0 {
+			metrics.TaskCompletionRatio.Set(float64(completedTasks) / float64(totalTasks))
+		}
 	}
 
 	task, exists := c.tasks[taskID]
@@ -552,15 +634,13 @@ func (c *Coordinator) AssignTaskToWorker(task types.Task, algorithm string, avai
 	switch algorithm {
 	case "random":
 		// Randomly select one of the available algorithms
-		algos := []string{"round-robin", "fcfs", "least-loaded", "priority", "consistent-hash"}
+		algos := []string{"round-robin", "fcfs", "least-loaded", "consistent-hash"}
 		randomAlgo := algos[rand.Intn(len(algos))]
-		c.logger.Info("Selected algorithm: ", randomAlgo)
 		return c.AssignTaskToWorker(task, randomAlgo, availableWorkers)
 
 	case "round-robin":
 		// Simple round robin - pick next worker in sequence
 		selectedWorkerID = availableWorkers[len(c.taskQueue)%len(availableWorkers)].ID
-		break
 
 	case "fcfs":
 		// First available worker gets the task
@@ -577,16 +657,16 @@ func (c *Coordinator) AssignTaskToWorker(task types.Task, algorithm string, avai
 			}
 		}
 
-	case "priority":
-		// Assign high priority tasks to workers with more capabilities
-		maxCaps := len(availableWorkers[0].Capabilities)
-		selectedWorkerID = availableWorkers[0].ID
-		for _, worker := range availableWorkers {
-			if len(worker.Capabilities) > maxCaps {
-				maxCaps = len(worker.Capabilities)
-				selectedWorkerID = worker.ID
-			}
-		}
+	// case "priority":
+	// 	// Assign high priority tasks to workers with more capabilities
+	// 	maxCaps := len(availableWorkers[0].Capabilities)
+	// 	selectedWorkerID = availableWorkers[0].ID
+	// 	for _, worker := range availableWorkers {
+	// 		if len(worker.Capabilities) > maxCaps {
+	// 			maxCaps = len(worker.Capabilities)
+	// 			selectedWorkerID = worker.ID
+	// 		}
+	// 	}
 
 	case "consistent-hash":
 		// Simple consistent hashing based on task ID
@@ -595,27 +675,6 @@ func (c *Coordinator) AssignTaskToWorker(task types.Task, algorithm string, avai
 			hash = 31*hash + int(c)
 		}
 		selectedWorkerID = availableWorkers[hash%len(availableWorkers)].ID
-
-	case "weighted-rr":
-		// Weight based on worker capabilities
-		totalWeight := 0
-		weights := make([]int, len(availableWorkers))
-		for i, worker := range availableWorkers {
-			weight := len(worker.Capabilities)
-			weights[i] = weight
-			totalWeight += weight
-		}
-
-		// Pick worker based on weighted distribution
-		target := len(c.taskQueue) % totalWeight
-		cumulative := 0
-		for i, weight := range weights {
-			cumulative += weight
-			if target < cumulative {
-				selectedWorkerID = availableWorkers[i].ID
-				break
-			}
-		}
 
 	default:
 		return nil, fmt.Errorf("unknown scheduling algorithm: %s", algorithm)
